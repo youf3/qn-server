@@ -1,0 +1,33 @@
+# .gitlab-ci.yml
+
+variables:
+  DOCKER_BUILDKIT: 1
+  DOCKER_DRIVER: overlay2
+  # Add GitLab registry for accessing private Python packages
+  PIP_EXTRA_INDEX_URL: "https://__token__:$PRIVATE_PYPI_TOKEN@gitlab.es.net/api/v4/projects/939/packages/pypi/simple"
+
+build_and_push_image:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    # Set up SSH key for accessing private repository
+    - 'command -v ssh-agent >/dev/null || ( apt-get update -y && apt-get install openssh-client -y )'
+    - eval $(ssh-agent -s)
+    - chmod 400 "$GITHUB_SSH_KEY"
+    - ssh-add "$GITHUB_SSH_KEY"
+    
+    # Set up multiple platform
+    - |
+      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      docker buildx create --use --name mybuilder
+      docker buildx inspect --bootstrap
+  script:
+    # Login to Docker registry
+    - echo "$ESNET_PASSWORD" | docker login -u "$ESNET_USERNAME" --password-stdin $ESNET_REGISTRY
+    # Build and push the multi-platform image with multiple tags
+    - docker buildx build --ssh default --platform linux/amd64,linux/arm64/v8 --build-arg PIP_EXTRA_INDEX_URL=$PIP_EXTRA_INDEX_URL -t $ESNET_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME -t $ESNET_REGISTRY_IMAGE:latest -f ./etc/docker/Dockerfile --push .
+  only:
+    - develop
+    - tags

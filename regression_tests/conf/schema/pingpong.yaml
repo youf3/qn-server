@@ -1,0 +1,125 @@
+---
+asyncapi: "2.6.0"
+id: "urn:gov:quant-net"
+info:
+  description: "Quant-Net Client RPC PingPong Handler"
+  title: "RPC PingPong Endpoint"
+  version: "1.0.0"
+components:
+  messages:
+    PingRequestMessage:
+      name: PingRequestMessage
+      messageId: ping.message
+      payload:
+        "$ref": "#/components/schemas/PingPongRequest"
+    PingResponseMessage:
+      name: PingResponseMessage
+      messageId: ping.response.message
+      payload:
+        "$ref": "#/components/schemas/PingPongResponse"
+  schemas:
+    PingPongRequest:
+      title: pingPongRequest
+      type: object
+      required:
+        - cmd
+        - agentId
+        - payload
+      properties:
+        cmd:
+          type: string
+        agentId:
+          type: string
+        payload:
+          type: object
+          required:
+            - type
+            - destinations
+            - iterations
+            - token
+          properties:
+            type:
+              type: string
+            destinations:
+              type: array
+              minItems: 1
+              items:
+                type: string
+            iterations:
+              type: number
+            token:
+              type: string
+    PingPongResponse:
+      title:  pingPongResponse
+      type: object
+      required:
+        - status
+        - token
+      properties:
+        status:
+          $ref: "qn-schema:objects/objects.yaml#/components/schemas/Status"
+        token:
+          type: string
+    PingMsg:
+      title: ping
+      type: object
+      required:
+        - cmd
+        - agentId
+        - payload
+      properties:
+        cmd:
+          type: string
+        agentId:
+          type: string
+        payload:
+          type: object
+          required:
+            - value
+          properties:
+            value:
+              type: string
+    PongMsg:
+      title: pong
+      type: object
+      required:
+        - timestamp
+        - message
+      properties:
+        timestamp:
+          type: number
+        message:
+          type: string
+    PingPongRecord:
+      title: pingPongRecord
+      type: object
+      required:
+        - id
+        - phase
+        - agent
+      properties:
+        id:
+          type: string
+        agent:
+          type: string
+        phase:
+          type: string
+        start_ts:
+          type: number
+        end_ts:
+          type: number
+        result:
+          type: string
+        iterations:
+          type: number
+        rtt_min:
+          type: number
+        rtt_max:
+          type: number
+        rtt_avg:
+          type: number
+        rtt_mdev:
+          type: number
+        successes:
+          type: number
+defaultContentType: application/json

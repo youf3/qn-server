@@ -1,0 +1,152 @@
+services:
+  controller:
+    image: ghcr.io/quant-net/quant-net-server:develop
+    restart: always
+    networks:
+      - qnet-backend
+    command: ["quantnet_controller", "--mq-broker-host", "mosquitto"]
+    environment:
+      - QUANTNET_ENTRYPOINT_DROP_ALL_DB=1
+      - QUANTNET_HOME=/opt/quantnet
+    volumes:
+      - ./conf/:/opt/quantnet/etc/
+      - ./conf/schema:/quant-net-plugins/schema
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - mosquitto
+      - mongo
+
+  portal:
+    image: ghcr.io/quant-net/quant-net-api:develop
+    restart: always
+    networks:
+      - qnet-backend
+    expose:
+      - 9000
+    ports:
+      - "9000:8081"
+    command: ["python", "main.py"]
+    environment:
+      - QUANTNET_HOME=/quant-net-api
+    volumes:
+      - ./conf/:/opt/quantnet/etc/
+      - ./conf/schema:/quant-net-plugins/schema
+    depends_on:
+      - mosquitto
+
+  agent-1:
+    image: ghcr.io/quant-net/quant-net-agent:develop
+    restart: always
+    networks:
+      - qnet-backend
+    command: ["quantnet_agent", "--mq-broker-host", "mosquitto", "-a", "LBNL-Q", "-n", "/quantnet_mq/quantnet_mq/schema/examples/topology/conf_lbnl-q.json"]
+    environment:
+      - QUANTNET_ENTRYPOINT_DELAY=15
+      - QUANTNET_HOME=/opt/quantnet
+    volumes:
+      - ./conf/:/opt/quantnet/etc/
+      - ./conf/schema:/quant-net-plugins/schema
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - mosquitto
+
+  agent-2:
+    image: ghcr.io/quant-net/quant-net-agent:develop
+    restart: always
+    networks:
+      - qnet-backend
+    command: ["quantnet_agent", "--mq-broker-host", "mosquitto", "-a", "UCB-Q", "-n", "/quantnet_mq/quantnet_mq/schema/examples/topology/conf_ucb-q.json"]
+    environment:
+      - QUANTNET_ENTRYPOINT_DELAY=15
+      - QUANTNET_HOME=/opt/quantnet
+    volumes:
+      - ./conf/:/opt/quantnet/etc/
+      - ./conf/schema:/quant-net-plugins/schema
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - mosquitto
+
+  agent-3:
+    image: ghcr.io/quant-net/quant-net-agent:develop
+    restart: always
+    networks:
+      - qnet-backend
+    command: ["quantnet_agent", "--mq-broker-host", "mosquitto", "-a", "LBNL-SWITCH", "-n", "/quantnet_mq/quantnet_mq/schema/examples/topology/conf_lbnl-switch.json"]
+    environment:
+      - QUANTNET_ENTRYPOINT_DELAY=15
+      - QUANTNET_HOME=/opt/quantnet
+    volumes:
+      - ./conf/:/opt/quantnet/etc/
+      - ./conf/schema:/quant-net-plugins/schema
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - mosquitto
+
+  agent-4:
+    image: ghcr.io/quant-net/quant-net-agent:develop
+    restart: always
+    networks:
+      - qnet-backend
+    command: ["quantnet_agent", "--mq-broker-host", "mosquitto", "-a", "UCB-SWITCH", "-n", "/quantnet_mq/quantnet_mq/schema/examples/topology/conf_ucb-switch.json"]
+    environment:
+      - QUANTNET_ENTRYPOINT_DELAY=15
+      - QUANTNET_HOME=/opt/quantnet
+    volumes:
+      - ./conf/:/opt/quantnet/etc/
+      - ./conf/schema:/quant-net-plugins/schema
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - mosquitto
+
+  mongo:
+    image: mongo
+    restart: always
+    networks:
+      - qnet-backend
+    expose:
+      - 27017
+    ports:
+      - "27017:27017"
+
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    hostname: mosquitto
+    restart: always
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+      - "8080:8080"
+    networks:
+      - qnet-backend
+    volumes:
+      - ./conf/:/mosquitto/config/
+    expose:
+      - 1883
+      - 9001
+      - 8080
+
+networks:
+  qnet-frontend:
+    driver: bridge
+  qnet-backend:
+    driver: bridge

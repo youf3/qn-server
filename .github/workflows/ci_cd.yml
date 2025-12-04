@@ -1,0 +1,235 @@
+name: CI/CD Test
+
+on:
+  schedule:
+    - cron: '30 9 * * *'  # Every day at midnight UTC
+  workflow_dispatch:     # Manual trigger
+
+env:
+  # Use docker.io for Docker Hub if empty
+  REGISTRY: ghcr.io
+  
+  # github.repository as <account>/<repo>
+  IMAGE_NAME: ${{ github.repository }}
+
+  # Sign containers using cosign
+  SIGN: false
+
+  # Set this to false to skip tests
+  RUN_TESTS: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20   #  Limit total job runtime to 4 minutes
+
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Clone quant-net-plugins repository
+        run: |
+          git clone --single-branch --branch develop https://${{secrets.QN_RO_PAT}}@github.com/quant-net/quant-net-plugins.git
+          cp -r quant-net-plugins/plugins/schema ./conf/
+
+      # - name: Enable SSH agent
+      #   uses: webfactory/ssh-agent@v0.9.0
+      #   with:
+      #     ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      # - name: Set GitLab PyPI token
+      #   run: |
+      #     echo "PIP_EXTRA_INDEX_URL=https://__token__:${{ secrets.GITLAB_PAT }}@gitlab.es.net/api/v4/projects/939/packages/pypi/simple" >> $GITHUB_ENV
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+      
+      - name: Build Docker containers
+        run: |
+          docker compose -f regression_tests/docker-compose.yml build --ssh default=${SSH_AUTH_SOCK}
+
+      - name: Start containers
+        run: |
+          ls -l regression_tests
+          ls -l regression_tests/conf
+          docker compose -f regression_tests/docker-compose.yml up -d
+
+      - name: Wait for containers to be ready
+        run: |
+          echo "Sleeping 30 seconds to allow services to start..."
+          sleep 30
+          docker compose -f regression_tests/docker-compose.yml ps
+          docker compose -f regression_tests/docker-compose.yml logs --tail=50
+    
+    
+      - name: Install dependencies for test
+        run: |
+          git clone --single-branch --branch develop https://${{secrets.QN_RO_PAT}}@github.com/quant-net/quant-net-mq.git quantnet-mq
+          cd quantnet-mq && pip install --no-cache-dir .
+    
+      - name: Run integration test and save output
+        run: |
+          RESULTS_FILE="test-results.txt"
+          echo "@BinDong314 @youf3 @disprosium8" > "$RESULTS_FILE"
+          echo "============================" >> "$RESULTS_FILE"
+          echo "CI/CD Test Results - Run #${{ github.run_number }}" >> "$RESULTS_FILE"
+          echo "Repository: ${{ github.repository }}" >> "$RESULTS_FILE"
+          echo "Workflow: ${{ github.workflow }}" >> "$RESULTS_FILE"
+          echo "Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$RESULTS_FILE"
+          
+          echo "Check containers [before] running scripts: start" | tee -a "$RESULTS_FILE"
+          chmod a+x ./regression_tests/scripts/check_container.sh
+          ./regression_tests/scripts/check_container.sh >> "$RESULTS_FILE" 2>&1
+          EXIT_CODE=$?
+          echo "Container check script finished with exit code: $EXIT_CODE" | tee -a "$RESULTS_FILE"
+          echo "Check containers [before] running scripts: end" | tee -a "$RESULTS_FILE"
+
+
+          # --- Initialization of python test cases---
+          # An array to keep track of any tests that fail.
+          declare -a FAILED_TESTS
+          # A counter for the test number.
+          TEST_NUM=1
+
+          # Clear the previous results file and write a header.
+          echo "Starting regression tests on $(date)" >> "$RESULTS_FILE"
+          echo "========================================" >> "$RESULTS_FILE"
+
+          # --- Test Execution Loop ---
+          # Find all files ending in .py in the test directory and loop through them.
+          for test_script in regression_tests/scripts/*.py; do
+            # Extract just the filename from the full path.
+            filename=$(basename "$test_script")
+            
+            echo "" >> "$RESULTS_FILE"
+            echo "Running Test #${TEST_NUM}: $filename"
+            echo "--------------------------------" >> "$RESULTS_FILE"
+            echo "Test #${TEST_NUM}: $filename" >> "$RESULTS_FILE"
+            echo "--------------------------------" >> "$RESULTS_FILE"
+            
+            # Allow the python script to fail without exiting the whole script.
+            set +e
+            
+            # Execute the python script, redirecting all output (stdout and stderr)
+            # to the results file. The -u flag ensures unbuffered output.
+            python -u "$test_script" >> "$RESULTS_FILE" 2>&1
+            EXIT_CODE=$?
+            
+            # Re-enable exiting on error.
+            set -e
+
+            # Log the exit code to the results file.
+            echo "" >> "$RESULTS_FILE"
+            echo "Exit code: $EXIT_CODE" >> "$RESULTS_FILE"
+            
+            # Check the exit code and report status.
+            if [ $EXIT_CODE -ne 0 ]; then
+              echo "  -> FAILED with exit code $EXIT_CODE"
+              # Add the failed script's name to our array of failures.
+              FAILED_TESTS+=("$filename")
+            else
+              echo "  -> PASSED"
+            fi
+            
+            # Increment the test counter.
+            ((TEST_NUM++))
+          done
+
+
+          # Check if the FAILED_TESTS array has any elements in it.
+          if [ ${#FAILED_TESTS[@]} -ne 0 ]; then
+            echo "SUMMARY: Failures detected in the following tests:"
+            echo "SUMMARY: Failures detected!" >> "$RESULTS_FILE"
+            # Loop through the array and print each failed test.
+            for failed_test in "${FAILED_TESTS[@]}"; do
+              echo "  - $failed_test"
+              echo "  - $failed_test" >> "$RESULTS_FILE"
+            done
+            # Exit with a status of 1 to indicate failure, which is useful for CI/CD systems.
+            exit 1
+          else
+            echo "✅ SUMMARY: All tests passed successfully!"
+            echo "✅ SUMMARY: All tests passed successfully!" >> "$RESULTS_FILE"
+            # Exit with a status of 0 to indicate success.
+            #exit 0
+          fi
+
+          echo "Check containers [after] running scripts: start"          
+          echo "Check containers [after] running scripts: start" >> "$RESULTS_FILE"
+          ./regression_tests/scripts/check_container.sh  >> "$RESULTS_FILE" 2>&1
+          EXIT_CODE=$?
+          echo "Container check script finished with exit code: $EXIT_CODE" | tee -a "$RESULTS_FILE"
+          echo "Check containers [after] running scripts: end"
+          echo "Check containers [after] running scripts: end" >> "$RESULTS_FILE"
+
+          # --- Summary ---
+          echo ""
+          echo "========================================" >> "$RESULTS_FILE"
+          echo "Test run complete." >> "$RESULTS_FILE"
+          echo "========================================"
+
+          echo "Cat "$RESULTS_FILE" file for inspection if necessary"
+          echo "======================Start Cat==============================="
+          cat "$RESULTS_FILE"
+          echo "======================End   Cat==============================="
+        
+
+      - name: Upload test results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results.txt
+      
+      - name: Create Failure Report
+        if: failure() # This step ONLY runs if any previous step has failed.
+        run: |
+          # Check if the main test results file was NOT created.
+          # This implies that a step BEFORE the tests failed.
+          if [ ! -f "test-results.txt" ]; then
+            echo "A setup step failed. Creating a failure summary."
+            RESULTS_FILE="test-results.txt"
+            echo "@BinDong314 @youf3 @disprosium8" > "$RESULTS_FILE"
+            echo "" >> "$RESULTS_FILE"
+            echo "### 🚨 CI/CD Workflow Failure - Run #${{ github.run_number }}" >> "$RESULTS_FILE"
+            echo "**A critical error occurred before the integration tests could run.**" >> "$RESULTS_FILE"
+            echo "" >> "$RESULTS_FILE"
+            echo "Please check the workflow logs for details on the failed step." >> "$RESULTS_FILE"
+            echo "" >> "$RESULTS_FILE"
+            echo "**Workflow Run Link:** [${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> "$RESULTS_FILE"
+          fi
+
+      #or if: failure()
+      - name: Notify key developers on GitHub
+        if: failure()
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: "CI/CD Test Results - Run #${{ github.run_number }}"
+          content-filepath: test-results.txt
+          labels: ci-results
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # - name: Run integration test - pingpong
+      #   run: python regression_tests/ping.py
+
+      # - name: Run integration test - Single Photon Generation
+      #   run: python regression_tests/spg.py
+
+      - name: Tear down services
+        if: always()
+        run: docker compose -f regression_tests/docker-compose.yml down -v

@@ -1,0 +1,108 @@
+---
+asyncapi: "2.6.0"
+id: "urn:gov:quant-net"
+info:
+  description: "Quant-Net RPC Entanglement Generation Protocol (EGP)"
+  title: "RPC EGP Endpoint"
+  version: "1.0.0"
+components:
+  messages:
+    RequestMessage:
+      name: egpRequest
+      messageId: egp.request.id
+      payload:
+        "$ref": "#/components/schemas/EGPRequest"
+    ResponseMEssage:
+      name: egpResponse
+      messageId: egp.response.id
+      payload:
+        "$ref": "#/components/schemas/EGPResponse"
+  schemas:
+    EGPRequest:
+      title: egpRequest
+      type: object
+      required:
+        - cmd
+        - agentId
+        - payload
+      properties:
+        cmd:
+          type: string
+        agentId:
+          type: string
+        payload:
+          type: object
+          required:
+            - source
+            - destination
+            - pairs
+            - bellState
+            - fidelity
+          properties:
+            source:
+              type: string
+            destination:
+              type: string
+            pairs:
+              type: number
+            bellState:
+              type: string
+            fidelity:
+              type: number
+    EGPQuery:
+      title: egpQuery
+      type: object
+      required:
+        - cmd
+        - agentId
+        - payload
+      properties:
+        cmd:
+          type: string
+        agentId:
+          type: string
+        payload:
+          type: object
+          required:
+            - rid
+          properties:
+            rid:
+              type: string
+    EGPResponse:
+      title:  egpResponse
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          $ref: "qn-schema:objects/objects.yaml#/components/schemas/Status"
+        rid:
+          type: string
+        data:
+          type: array
+          items:
+            type: object
+    EGPRequestRecord:
+      title: egpRequestRecord
+      type: object
+      required:
+        - phase
+        - rid
+      properties:
+        phase:
+          type: string
+        rid:
+          type: string
+        data:
+          type: object
+        source:
+          type: string
+        destination:
+          type: string
+        pairs:
+          type: number
+        bellState:
+          type: string
+        fidelity:
+          type: number
+defaultContentType: application/json

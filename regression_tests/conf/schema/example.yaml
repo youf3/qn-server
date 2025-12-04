@@ -1,0 +1,37 @@
+---
+asyncapi: "2.6.0"
+id: "urn:gov:quant-net"
+info:
+  description: "Quant-Net Simple Example"
+  title: "RPC Example Endpoint"
+  version: "1.0.0"
+components:
+  messages:
+    RequestMessage:
+      name: RequestMessage
+      messageId: example.request
+      payload:
+        "$ref": "#/components/schemas/RequestMessage"
+  schemas:
+    RequestMessage:
+      title: myRequest
+      type: object
+      required:
+        - cmd
+        - agentId
+        - payload
+      properties:
+        cmd:
+          type: string
+        agentId:
+          type: string
+        payload:
+          type: object
+          required:
+            - arg1
+            - arg2
+          properties:
+            arg1:
+              type: string
+            arg2:
+              type: number
