@@ -330,6 +330,7 @@ class RequestTranslator:
                         "className": sequence.class_name,
                         "parameters": exp_params,
                         "timeSlot": timeslot_mask[:timeslot],
+                        "topic": self.request_type.value
                     }
                     timeslot_mask = timeslot_mask[timeslot:]
                     allocations.append(allocation)
@@ -391,8 +392,12 @@ class RequestTranslator:
         :rtype: dict
         """
         logger.debug(f"Submitting function with param {param}")
+
+        # Use the appropriate RPC method based on request type
+        rpc_method = self.request_type.__name__.lower()
+
         submitResp = await self.context.rpcclient.call(
-            "experiment.submit",
+            rpc_method,
             param,
             topic=f"rpc/{agent_id}",
             timeout=timeout,
