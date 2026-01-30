@@ -391,8 +391,13 @@ class RequestTranslator:
         :rtype: dict
         """
         logger.debug(f"Submitting function with param {param}")
+
+        # Use the appropriate RPC method based on request type
+        type_name = self.request_type.__name__.lower()
+        rpc_method = f"{type_name}.submit"
+
         submitResp = await self.context.rpcclient.call(
-            "experiment.submit",
+            rpc_method,
             param,
             topic=f"rpc/{agent_id}",
             timeout=timeout,
@@ -415,8 +420,13 @@ class RequestTranslator:
         :rtype: dict
         """
         logger.debug(f"Getting result of exp {param['expid']}")
+
+        # Use the appropriate RPC method based on request type
+        type_name = self.request_type.__name__.lower()
+        rpc_method = f"{type_name}.getResult"
+
         submitResp = await self.context.rpcclient.call(
-            "experiment.getResult",
+            rpc_method,
             param,
             topic=f"rpc/{agent_id}",
             timeout=timeout,

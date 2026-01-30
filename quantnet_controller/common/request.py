@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, Optional, List
 
 from quantnet_mq import Code
-from quantnet_mq.schema.models import Status, experiment
+from quantnet_mq.schema.models import Status, experiment, calibration
 
 from quantnet_controller.common.request_translator import RequestTranslator
 from quantnet_controller.common.utils import generate_uuid
@@ -229,7 +229,7 @@ class RequestManager:
         self._active_requests = RequestManager._shared_active_requests
 
         # Initialize translator for experiment-type requests
-        if request_type == RequestType.EXPERIMENT or request_type == RequestType.CALIBRATION:
+        if request_type == RequestType.EXPERIMENT:
             if exp_def_path is None:
                 import inspect
 
@@ -246,6 +246,24 @@ class RequestManager:
                 logger.info(f"Loaded experiment definition from {exp_def_path}")
             else:
                 logger.warning(f"Experiment definition not found at {exp_def_path}")
+        
+        elif request_type == RequestType.CALIBRATION:
+            if exp_def_path is None:
+                import inspect
+
+                # Get the caller's frame to find cal_def_path
+                caller_frame = inspect.currentframe().f_back
+                caller_file = caller_frame.f_globals.get("__file__")
+                if caller_file:
+                    caller_dir = os.path.dirname(os.path.abspath(caller_file))
+                    exp_def_path = os.path.join(caller_dir, "experiment.py")
+
+            self.translator = RequestTranslator(self.ctx, calibration)
+            if exp_def_path and os.path.exists(exp_def_path):
+                self.translator.load_exp_def(exp_def_path)  # Reusing load_exp_def for calibration
+                logger.info(f"Loaded calibration definition from {exp_def_path}")
+            else:
+                logger.warning(f"Calibration definition not found at {exp_def_path}")
         else:
             self.translator = None
 
@@ -530,17 +548,29 @@ class RequestManager:
         self.db_handler.upsert({"id": request.id}, request.to_dict())
 
         try:
-            if (
-                self.request_type == RequestType.EXPERIMENT or self.request_type == RequestType.CALIBRATION
-            ) and self.translator:
+            if self.request_type == RequestType.EXPERIMENT and self.translator:
                 # Merge payload data into parameters for experiment execution
                 exec_params = request.parameters.copy()
                 exec_params["id"] = request.id
 
                 # Execute experiment with result callback
                 # Uses request.add_result to ensure flat structure
-                rc = await self.translator.start_experiment(exec_params, handle_result=request.add_result)
+                rc = await self.translator.start_experiment(exec_params, request.add_result)
 
+            elif self.request_type == RequestType.CALIBRATION and self.translator:
+                # Merge payload data into parameters for calibration execution
+                exec_params = request.parameters.copy()
+                exec_params["id"] = request.id
+
+                # Extract data from payload if needed
+                if hasattr(request.payload, "payload"):
+                    # Add payload-specific data to execution parameters
+                    exec_params["payload_data"] = request.payload.payload
+
+                # Use the same start_experiment method (it's generic enough for calibration)
+                # Or create a dedicated start_calibration method if needed
+                rc = await self.translator.start_experiment(exec_params, request.add_result)
+            
             elif self.request_type == RequestType.PROTOCOL and request.func:
                 # Execute custom protocol function
                 logger.info(f"Executing custom function for protocol request {request.id}")

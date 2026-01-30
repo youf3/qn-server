@@ -28,3 +28,15 @@ class CalibrationType(int, Enum):
 
     LINK_STAB = (1, "Link Stabilization")
     BSM_POL = (2, "BSM Polarization")
+
+
+class ExperimentType(int, Enum):
+    def __new__(cls, value, label):
+        obj = int.__new__(cls, value)
+        obj._value_ = value
+        obj.label = label
+        return obj
+
+    CALIBRATION = (1, "Calibration")
+    EXPERIMENT = (2, "Experiment")
+    TEST = (3, "Test")
