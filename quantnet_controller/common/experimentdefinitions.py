@@ -1,5 +1,5 @@
 from abc import ABCMeta, abstractmethod
-from quantnet_controller.common.constants import Constants
+from quantnet_controller.common.constants import Constants, ExperimentType
 from datetime import timedelta
 import math
 
@@ -50,6 +50,8 @@ def get_timeslot_mask(sequences):
 
 
 class Experiment(metaclass=ABCMeta):
+    
+    type = ExperimentType.EXPERIMENT
 
     @property
     @abstractmethod
