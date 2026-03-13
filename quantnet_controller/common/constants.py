@@ -9,7 +9,7 @@ class Constants:
     INSTANCE_UUID = uuid.uuid4()
     DEFAULT_TEST_DB_NAME = "quantnet_test"
     DEFAULT_TEST_DB_URI = f"mongodb://localhost:27017/{DEFAULT_TEST_DB_NAME}"
-    SLOTSIZE = timedelta(milliseconds=100)
+    SLOTSIZE = timedelta(milliseconds=3)
     MAX_TIMESLOTS = 500
     PLUGIN_PATH = os.path.join(os.path.dirname(quantnet_controller.__file__), "plugins")
     DEFAULT_EXP_DEFS = os.path.join(os.path.dirname(quantnet_controller.__file__),
