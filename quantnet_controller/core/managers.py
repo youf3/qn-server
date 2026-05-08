@@ -2,6 +2,7 @@
 Resource Manager
 """
 
+import asyncio
 import json
 import logging
 import types
@@ -73,8 +74,9 @@ class ResourceManager:
             logger.info(f"Registering {ntype} {sysid} from agent {node.agentId}")
             jsobj = json.loads(payload.serialize())
 
-            # Save to Database
-            self._node_db.upsert({"systemSettings.ID": str(sysid)}, jsobj)
+            # Save to Database — run_in_executor prevents blocking the event loop
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._node_db.upsert, {"systemSettings.ID": str(sysid)}, jsobj)
             logger.info(f"Registering {ntype} {sysid} succeed.")
             self._is_topo_updated = True
         except Exception as e:
