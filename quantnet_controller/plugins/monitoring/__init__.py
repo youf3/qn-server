@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from quantnet_controller.common.plugin import MonitoringPlugin, PluginType
@@ -25,21 +26,21 @@ class Monitor(MonitoringPlugin):
         logger.debug(f"Received resource update: {request}")
         try:
             obj = monitor.MonitorEvent.from_json(request)
+            loop = asyncio.get_running_loop()
             if obj.eventType == EventType.AGENT_HEARTBEAT:
                 # Update last_seen timestamp on the node record
                 agent_id = obj.rid
                 now = time.time()
-                self._node_db.update(
-                    {"systemSettings.ID": str(agent_id)},
-                    "last_seen",
-                    now
+                await loop.run_in_executor(
+                    None, self._node_db.update,
+                    {"systemSettings.ID": str(agent_id)}, "last_seen", now
                 )
                 logger.debug(f"Updated last_seen for node {agent_id} to {now}")
             else:
-                self._db.add(obj.as_dict())
+                await loop.run_in_executor(None, self._db.add, obj.as_dict())
                 if obj.eventType == EventType.AGENT_STATE:
                     logger.info(f"{obj.rid} {obj.eventType} is updated : "
-                                f"{self._context.rm.get_node_state(obj.rid)}")
+                                f"{obj.as_dict()}")
                 elif obj.eventType == EventType.EXPERIMENT_RESULT:
                     logger.info(f"{obj.rid} {obj.eventType} is updated : {obj.value}")
                 elif obj.eventType == EventType.AGENT_TASK_RESULT:
@@ -59,10 +60,11 @@ class Monitor(MonitoringPlugin):
                 filter["rid"] = agent_id
             
             logger.info(f"Querying Monitor DB with filter: {filter}")
-            all_records = list(self._db.find())
+            loop = asyncio.get_running_loop()
+            all_records = await loop.run_in_executor(None, lambda: list(self._db.find()))
             logger.info(f"DEBUG: Total records in Monitor collection: {len(all_records)}")
-            
-            results = list(self._db.find(filter=filter))
+
+            results = await loop.run_in_executor(None, lambda: list(self._db.find(filter=filter)))
             logger.info(f"Found {len(results)} results for filter {filter}")
             tasks = []
             for res in results:
