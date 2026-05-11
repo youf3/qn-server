@@ -112,6 +112,25 @@ services:
     depends_on:
       - mosquitto
 
+  agent-5:
+    image: ghcr.io/quant-net/qn-agent:develop
+    restart: always
+    networks:
+      - qnet-backend
+    command: ["quantnet_agent", "--mq-broker-host", "mosquitto", "-a", "LBNL-BSM", "-n", "/qn-mq/quantnet_mq/schema/examples/topology/conf_lbnl-bsm.json"]
+    environment:
+      - QUANTNET_ENTRYPOINT_DELAY=15
+      - QUANTNET_HOME=/opt/quantnet
+    volumes:
+      - ./conf/:/opt/quantnet/etc/
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - mosquitto
+
   mongo:
     image: mongo
     restart: always
