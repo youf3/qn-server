@@ -19,6 +19,9 @@ class Collection:
     # Otherwise, a new internal '_id' will be generated but
     # will not be exposed to user.
     _keyname = "_id"
+    _capped = False
+    _history = False
+    _size = None  # bytes; only used when _capped=True
 
     def __init__(self, model="default"):
         self._collection_name = model if model else "default"
@@ -32,7 +35,10 @@ class Collection:
             global _DATABASE
             if _DATABASE is None:
                 _DATABASE = DBLoader(config=_COLLECTION_CONFIG)
-            layer = _DATABASE.get_db_layer(self._collection_name, key)
+            layer = _DATABASE.get_db_layer(
+                self._collection_name, key,
+                capped=self._capped, history=self._history, size=self._size,
+            )
             return func(self, *args, **kwargs, layer=layer)
         return wrapper
 
@@ -41,11 +47,14 @@ class Collection:
         if not isinstance(data, dict):
             raise Exception(f"Type error: {data} is not dict")
         try:
-            docs = layer.insert(data)
-            if len(docs) == 1 and docs[0].upserted_id:
-                return data
-            else:
+            result = layer.insert(data)
+            # history=True path returns InsertManyResult; history=False returns list of UpdateResult
+            if isinstance(result, list):
+                if len(result) == 1 and result[0].upserted_id:
+                    return data
                 return None
+            # InsertManyResult — inserted successfully
+            return data if result.inserted_ids else None
         except Exception:
             raise
 
@@ -127,10 +136,18 @@ class Collection:
         return True if layer.find_one(filter) else False
 
     @layer
+    def count(self, layer=None, **kwargs):
+        q = kwargs.pop("filter", {})
+        return layer.count(q, **kwargs)
+
+    @layer
+    def create_index(self, keys, layer=None, **kwargs):
+        return layer.create_index(keys, **kwargs)
+
+    @layer
     def drop(self, layer=None, **kwargs):
         return layer.drop(**kwargs)
 
     @layer
     def drop_database(self, layer=None, **kwargs):
-        global _DATABASE
         _DATABASE.drop_database(**kwargs)

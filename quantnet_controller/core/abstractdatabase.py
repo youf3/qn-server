@@ -5,6 +5,7 @@ class DBmodel():
     Node = "Node"
     Request = "Request"
     Monitor = "Monitor"
+    MonitorState = "MonitorState"
     Calibration = "Calibration"
     PingPong = "PingPong"
     Blob = "Blob"

@@ -188,13 +188,15 @@ class ResourceManager:
         self._topo = g
 
     def get_node_state(self, agentid):
-        handler = DB().handler(DBmodel.Monitor)
-        res = handler.find(filter={"rid": str(agentid), "eventType": EventType.AGENT_STATE}, limit=1, sort={"ts": -1})
+        # Query the capped MonitorState collection — only agentState events,
+        # natural order = insertion order, so $natural: -1 gives the latest first.
+        handler = DB().handler(DBmodel.MonitorState)
+        res = handler.find(filter={"rid": str(agentid)}, limit=1, sort=[("$natural", -1)])
         return res[0] if res else None
 
     def get_exp_results(self, exp_id):
         handler = DB().handler(DBmodel.Monitor)
-        return handler.find(filter={"exp_id": str(exp_id), "eventType": EventType.EXPERIMENT_RESULT})
+        return handler.find(filter={"value.exp_id": str(exp_id), "eventType": EventType.EXPERIMENT_RESULT})
 
     def get_topology(self, full: bool = False):
         if not self._topo or self._is_topo_updated or self._is_topo_full != full:
