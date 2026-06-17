@@ -54,7 +54,8 @@ class ResourceManager:
         """Capture all requests to the controller"""
 
         async def wrapper(req):
-            self._handle_request(req)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._handle_request, req)
             res = orig_cb(req)
             if isinstance(res, types.CoroutineType):
                 res = await res
@@ -67,6 +68,8 @@ class ResourceManager:
         if node is None:
             raise ValueError("handle_register: invalid input parameter - node is None")
 
+        sysid = None
+        ntype = None
         try:
             payload = node.payload
             sysid = payload.systemSettings.ID

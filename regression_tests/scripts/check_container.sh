@@ -16,6 +16,11 @@ for CONTAINER in "${CONTAINERS[@]}"; do
     # Get container exit code
     EXITED=$(docker inspect -f '{{.State.ExitCode}}' "$CONTAINER_ID")
 
+    if [ "$EXITED" != "0" ]; then
+        echo "❌ Container $CONTAINER exited with code $EXITED"
+        HAS_ERROR=1
+    fi
+
     # Get container logs
     LOGS=$(docker compose -f regression_tests/docker-compose.yml logs "$CONTAINER")
 
