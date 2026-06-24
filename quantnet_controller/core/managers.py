@@ -2,7 +2,6 @@
 Resource Manager
 """
 
-import asyncio
 import json
 import logging
 import types
@@ -11,7 +10,7 @@ from networkx import node_link_data
 import quantnet_mq.schema.models as models
 from quantnet_mq import EventType
 from quantnet_controller.common.config import Config
-from quantnet_controller.core import AbstractDatabase as DB, DBmodel
+from quantnet_controller.core import AbstractDatabase as DB, AsyncAbstractDatabase as AsyncDB, DBmodel
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +18,9 @@ logger = logging.getLogger(__name__)
 class ResourceManager:
     def __init__(self, rtype="nodes", key="agentId", **kwargs):
         self._topo = None
-        self._node_db = DB().handler(DBmodel.Node)
-        self._request_db = DB().handler(DBmodel.Request)
+        self._node_db = DB().handler(DBmodel.Node)          # sync — used by find_nodes, get_nodes
+        self._request_db = DB().handler(DBmodel.Request)    # sync — used by _handle_request
+        self._async_node_db = AsyncDB().handler(DBmodel.Node)  # async — used by handle_register
         self._is_topo_updated = False
         self._is_topo_full = False
 
@@ -54,8 +54,7 @@ class ResourceManager:
         """Capture all requests to the controller"""
 
         async def wrapper(req):
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._handle_request, req)
+            self._handle_request(req)
             res = orig_cb(req)
             if isinstance(res, types.CoroutineType):
                 res = await res
@@ -77,9 +76,7 @@ class ResourceManager:
             logger.info(f"Registering {ntype} {sysid} from agent {node.agentId}")
             jsobj = json.loads(payload.serialize())
 
-            # Save to Database — run_in_executor prevents blocking the event loop
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._node_db.upsert, {"systemSettings.ID": str(sysid)}, jsobj)
+            await self._async_node_db.upsert({"systemSettings.ID": str(sysid)}, jsobj)
             logger.info(f"Registering {ntype} {sysid} succeed.")
             self._is_topo_updated = True
         except Exception as e:

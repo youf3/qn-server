@@ -6,7 +6,7 @@ SQLAlchemy==1.4.31
 uvloop==0.21.0
 networkx==3.4.2
 aioschedule==0.5.2
-pymongo==4.6.3
+pymongo>=4.9,<5
 bitarray==3.0.0
 requests==2.32.4
 quantnet-mq

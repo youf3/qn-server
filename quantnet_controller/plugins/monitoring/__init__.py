@@ -1,11 +1,10 @@
-import asyncio
 import logging
 import time
 from datetime import datetime, timezone
 from quantnet_controller.common.plugin import MonitoringPlugin, PluginType
 from quantnet_mq.schema.models import monitor, Status, agentMonitorTaskResponse
 from quantnet_mq import Code, EventType
-from quantnet_controller.core import AbstractDatabase as DB, DBmodel
+from quantnet_controller.core import AsyncAbstractDatabase as DB, DBmodel
 
 logger = logging.getLogger(__name__)
 
@@ -28,24 +27,22 @@ class Monitor(MonitoringPlugin):
         logger.debug(f"Received resource update: {request}")
         try:
             obj = monitor.MonitorEvent.from_json(request)
-            loop = asyncio.get_running_loop()
             if obj.eventType == EventType.AGENT_HEARTBEAT:
                 # Update last_seen timestamp on the node record
                 agent_id = obj.rid
                 now = time.time()
-                await loop.run_in_executor(
-                    None, self._node_db.update,
+                await self._node_db.update(
                     {"systemSettings.ID": str(agent_id)}, "last_seen", now
                 )
                 logger.debug(f"Updated last_seen for node {agent_id} to {now}")
             elif obj.eventType == EventType.AGENT_STATE:
                 # Capped collection — append-only, old entries auto-evicted
-                await loop.run_in_executor(None, self._state_db.add, obj.as_dict())
+                await self._state_db.add(obj.as_dict())
                 logger.info(f"{obj.rid} {obj.eventType} is updated : {obj.as_dict()}")
             else:
                 doc = obj.as_dict()
                 doc["created_at"] = datetime.now(timezone.utc)
-                await loop.run_in_executor(None, self._db.add, doc)
+                await self._db.add(doc)
                 if obj.eventType == EventType.EXPERIMENT_RESULT:
                     logger.info(f"{obj.rid} {obj.eventType} is updated : {obj.value}")
                 elif obj.eventType == EventType.AGENT_TASK_RESULT:
@@ -65,8 +62,7 @@ class Monitor(MonitoringPlugin):
                 filter["rid"] = agent_id
 
             logger.info(f"Querying Monitor DB with filter: {filter}")
-            loop = asyncio.get_running_loop()
-            results = await loop.run_in_executor(None, lambda: list(self._db.find(filter=filter)))
+            results = await self._db.find(filter=filter)
             logger.info(f"Found {len(results)} results for filter {filter}")
             tasks = []
             for res in results:

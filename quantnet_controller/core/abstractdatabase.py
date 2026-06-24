@@ -1,4 +1,5 @@
 from quantnet_controller.db.broker import broker as db_broker, Broker
+from quantnet_controller.db.async_broker import async_broker, AsyncBroker
 
 
 class DBmodel():
@@ -10,6 +11,7 @@ class DBmodel():
     PingPong = "PingPong"
     Blob = "Blob"
 
+# TODO: Make Async version of AbstractDatabase (AsyncAbstractDatabase) to support async database operations
 
 class AbstractDatabase():
     """
@@ -228,3 +230,96 @@ class AbstractDatabase():
 
         """
         return broker.exist(model, id, **kwargs)
+
+
+class AsyncAbstractDatabase:
+    """
+    Async version of AbstractDatabase.
+
+    Consumers use `AsyncAbstractDatabase().handler(DBmodel.X)` to get an
+    `AsyncDBModel` proxy whose methods are all `async def`. The underlying
+    DB calls use pymongo's native async API (AsyncMongoClient) with no
+    thread-pool wrapping.
+
+    The sync `AbstractDatabase` is unchanged — sync callers are unaffected.
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    class AsyncDBModel:
+        def __init__(self, db, model):
+            self._db = db
+            self._model = model
+
+        async def add(self, data, **kwargs) -> dict:
+            return await self._db.add(self._model, data, **kwargs)
+
+        async def get(self, id, **kwargs) -> dict | None:
+            return await self._db.get(self._model, id, **kwargs)
+
+        async def find(self, **kwargs) -> list:
+            return await self._db.find(self._model, **kwargs)
+
+        async def update(self, id, key, value, **kwargs) -> bool:
+            return await self._db.update(self._model, id, key, value, **kwargs)
+
+        async def upsert(self, id, *args, **kwargs) -> bool:
+            return await self._db.upsert(self._model, id, *args, **kwargs)
+
+        async def delete(self, id, **kwargs) -> int:
+            return await self._db.delete(self._model, id, **kwargs)
+
+        async def exist(self, id, **kwargs) -> bool:
+            return await self._db.exist(self._model, id, **kwargs)
+
+        async def drop(self, **kwargs) -> None:
+            return await self._db.drop(self._model, **kwargs)
+
+    def handler(self, model=DBmodel.Blob):
+        """Return an async table/collection handler."""
+        return AsyncAbstractDatabase.AsyncDBModel(self, model)
+
+    @staticmethod
+    @async_broker
+    async def add(model, data, broker: AsyncBroker, **kwargs):
+        return await broker.add(model, data, **kwargs)
+
+    @staticmethod
+    @async_broker
+    async def get(model, id, broker: AsyncBroker, **kwargs):
+        return await broker.get(model, id, **kwargs)
+
+    @staticmethod
+    @async_broker
+    async def find(model, broker: AsyncBroker, **kwargs) -> list:
+        return await broker.find(model, **kwargs)
+
+    @staticmethod
+    @async_broker
+    async def update(model, id, key, value, broker: AsyncBroker, **kwargs):
+        return await broker.update(model, id, key, value, **kwargs)
+
+    @staticmethod
+    @async_broker
+    async def upsert(model, id, *args, broker: AsyncBroker, **kwargs):
+        return await broker.upsert(model, id, *args, **kwargs)
+
+    @staticmethod
+    @async_broker
+    async def delete(model, id, broker: AsyncBroker, **kwargs):
+        return await broker.delete(model, id, **kwargs)
+
+    @staticmethod
+    @async_broker
+    async def exist(model, id, broker: AsyncBroker, **kwargs):
+        return await broker.exist(model, id, **kwargs)
+
+    @staticmethod
+    @async_broker
+    async def drop(model, broker: AsyncBroker, **kwargs):
+        return await broker.drop(model, **kwargs)
