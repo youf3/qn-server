@@ -99,6 +99,10 @@ class DBLayer(object):
         results = self.collection.delete_many(query)
         return results
 
+    def create_index(self, keys, **kwargs):
+        """Create an index on the collection. Thin pass-through to pymongo."""
+        return self.collection.create_index(keys, **kwargs)
+
     def drop(self, **kwargs):
         self.collection.drop()
 
@@ -116,6 +120,7 @@ class DBLoader:
         self._host = kwargs.get("host")
         self._port = kwargs.get("port")
         self._dbname = kwargs.get("dbname", "quantnet")
+        self._capped_collections = set()
         self._db = self._init()
 
     @property
@@ -149,8 +154,14 @@ class DBLoader:
     def drop_database(self, **kwargs):
         self._conn.drop_database(self._dbname)
 
-    def get_db_layer(self, collection_name, id_field_name):
+    def get_db_layer(self, collection_name, id_field_name, capped=False, history=False, size=None):
         if not collection_name:
             return None
-        db_layer = DBLayer(self.db, collection_name, False, id_field_name)
+        if capped and collection_name not in self._capped_collections:
+            if collection_name not in self.db.list_collection_names():
+                cap_size = size or 10 * 1024 * 1024  # default 10 MB
+                self.db.create_collection(collection_name, capped=True, size=cap_size)
+                self.log.info(f"Created capped collection '{collection_name}' (size={cap_size})")
+            self._capped_collections.add(collection_name)
+        db_layer = DBLayer(self.db, collection_name, capped, id_field_name, history=history)
         return db_layer

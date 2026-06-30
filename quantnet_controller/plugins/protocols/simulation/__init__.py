@@ -44,7 +44,7 @@ class SimulationPrtocol(ProtocolPlugin):
                 "id": simid,
                 "name": request.payload.parameters.get("name"),
                 "src": request.payload.parameters.get("src"),
-                "params": request.payload.parameters,
+                "exp_params": request.payload.parameters,
             }
 
             rc = await self.ctx.request_middleware.schedule(parameters, "Simulation")

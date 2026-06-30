@@ -1,9 +1,10 @@
 import logging
 import time
+from datetime import datetime, timezone
 from quantnet_controller.common.plugin import MonitoringPlugin, PluginType
 from quantnet_mq.schema.models import monitor, Status, agentMonitorTaskResponse
 from quantnet_mq import Code, EventType
-from quantnet_controller.core import AbstractDatabase as DB, DBmodel
+from quantnet_controller.core import AsyncAbstractDatabase as DB, DBmodel
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,7 @@ class Monitor(MonitoringPlugin):
     def __init__(self, context):
         super().__init__("monitor", PluginType.MONITORING, context)
         self._db = DB().handler(DBmodel.Monitor)
+        self._state_db = DB().handler(DBmodel.MonitorState)
         self._node_db = DB().handler(DBmodel.Node)
         logger.info(f"Monitor plugin initialized with DB handler: {self._db}")
         self._msg_commands = [
@@ -29,18 +31,19 @@ class Monitor(MonitoringPlugin):
                 # Update last_seen timestamp on the node record
                 agent_id = obj.rid
                 now = time.time()
-                self._node_db.update(
-                    {"systemSettings.ID": str(agent_id)},
-                    "last_seen",
-                    now
+                await self._node_db.update(
+                    {"systemSettings.ID": str(agent_id)}, "last_seen", now
                 )
                 logger.debug(f"Updated last_seen for node {agent_id} to {now}")
+            elif obj.eventType == EventType.AGENT_STATE:
+                # Capped collection — append-only, old entries auto-evicted
+                await self._state_db.add(obj.as_dict())
+                logger.info(f"{obj.rid} {obj.eventType} is updated : {obj.as_dict()}")
             else:
-                self._db.add(obj.as_dict())
-                if obj.eventType == EventType.AGENT_STATE:
-                    logger.info(f"{obj.rid} {obj.eventType} is updated : "
-                                f"{self._context.rm.get_node_state(obj.rid)}")
-                elif obj.eventType == EventType.EXPERIMENT_RESULT:
+                doc = obj.as_dict()
+                doc["created_at"] = datetime.now(timezone.utc)
+                await self._db.add(doc)
+                if obj.eventType == EventType.EXPERIMENT_RESULT:
                     logger.info(f"{obj.rid} {obj.eventType} is updated : {obj.value}")
                 elif obj.eventType == EventType.AGENT_TASK_RESULT:
                     logger.info(f"{obj.rid} {obj.eventType} is updated : {obj.value}")
@@ -53,16 +56,13 @@ class Monitor(MonitoringPlugin):
             agent_id = request.payload.agent_id
             if agent_id:
                 agent_id = str(agent_id).strip()
-            
+
             filter = {"eventType": EventType.AGENT_TASK_RESULT}
             if agent_id:
                 filter["rid"] = agent_id
-            
+
             logger.info(f"Querying Monitor DB with filter: {filter}")
-            all_records = list(self._db.find())
-            logger.info(f"DEBUG: Total records in Monitor collection: {len(all_records)}")
-            
-            results = list(self._db.find(filter=filter))
+            results = await self._db.find(filter=filter)
             logger.info(f"Found {len(results)} results for filter {filter}")
             tasks = []
             for res in results:
@@ -77,10 +77,15 @@ class Monitor(MonitoringPlugin):
                     "agentIds": [res["rid"]],
                     "expName": res["value"].get("name"),
                 })
-            return agentMonitorTaskResponse(status=Status(code=Code.OK.value, value=Code.OK.name), tasks=tasks)
+            return agentMonitorTaskResponse(
+                status=Status(code=Code.OK.value, value=Code.OK.name), tasks=tasks
+            )
         except Exception as e:
             logger.error(f"Failed to get tasks: {e}")
-            return agentMonitorTaskResponse(status=Status(code=Code.INTERNAL.value, value=Code.INTERNAL.name, message=str(e)), tasks=[])
+            return agentMonitorTaskResponse(
+                status=Status(code=Code.INTERNAL.value, value=Code.INTERNAL.name, message=str(e)),
+                tasks=[],
+            )
 
     def initialize(self):
         pass
@@ -92,4 +97,6 @@ class Monitor(MonitoringPlugin):
         pass
 
     def start(self):
+        from quantnet_controller.db.nosql.collection.monitor import Monitor as MonitorCollection
+        MonitorCollection().ensure_indexes()
         logger.info("Monitor started and listening on /monitor topic")

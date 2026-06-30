@@ -104,7 +104,7 @@ def _validate_agent_requirements(exp_def, available_nodes, heartbeat_timeout=Non
         raise ValueError(error_msg)
 
     logger.debug(f"Agent validation passed. Required: {required_types}, Available: {available_types}")
-    return is_valid, required_types, available_types, missing_types
+    return reachable_nodes
 
 
 def match_agent_to_exp(exp_def, path, validate=True):
@@ -125,20 +125,23 @@ def match_agent_to_exp(exp_def, path, validate=True):
     """
     # Handle both Path objects and lists of node IDs
     if hasattr(path, "hops"):
-        nodes = [x for x in path.hops if x is not None and x.systemSettings.type != "OpticalSwitch"] if path.hops else []
+        nodes = (
+            [x for x in path.hops if x is not None and x.systemSettings.type != "OpticalSwitch"]
+            if path.hops else []
+        )
     else:
         # If path is already a list (from DB), reconstruct nodes
         nodes = path if isinstance(path, list) else []
 
-    # Validate requirements if requested
+    # Validate requirements if requested; use filtered reachable_nodes for matching
     if validate:
-        _validate_agent_requirements(exp_def, nodes)
+        nodes = _validate_agent_requirements(exp_def, nodes)
 
     # Perform matching with non-mutating approach
     mapping = []
-    nodes_copy = list(nodes)  # Create copy to avoid mutation
+    nodes_copy = list(nodes)
     exp_nodes = [x.node_type for x in exp_def.agent_sequences]
-    
+
     for node_type in exp_nodes:
         for i in range(len(nodes_copy)):
             node_id = nodes_copy[i] if isinstance(nodes_copy[i], str) else nodes_copy[i].systemSettings.ID
@@ -266,8 +269,8 @@ class RequestTranslator:
         :type parameters['exp_name']: str
         :param parameters['path']: Path object or list of node IDs.
         :type parameters['path']: Any
-        :param parameters['params']: Experiment-specific parameters.
-        :type parameters['params']: dict | list | Any
+        :param parameters['exp_params']: Experiment-specific parameters.
+        :type parameters['exp_params']: dict | list | Any
         :param parameters['payload_data']: Optional additional payload data.
         :type parameters['payload_data']: Any | None
 
