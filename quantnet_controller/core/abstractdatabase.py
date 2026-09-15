@@ -10,6 +10,7 @@ class DBmodel():
     Calibration = "Calibration"
     PingPong = "PingPong"
     Blob = "Blob"
+    LinkState = "LinkState"
 
 # TODO: Make Async version of AbstractDatabase (AsyncAbstractDatabase) to support async database operations
 

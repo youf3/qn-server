@@ -4,6 +4,7 @@ Resource Manager
 
 import json
 import logging
+import os
 import types
 import networkx as nx
 from networkx import node_link_data
@@ -110,6 +111,20 @@ class ResourceManager:
             ret.append(self.node_loader(node))
         return ret
 
+    def _get_link_state(self, src_cid: str, dst_cid: str) -> str:
+        """Get link state from link_state collection."""
+        try:
+            link_db = DB().handler(DBmodel.LinkState)
+            doc = link_db.get({"src_cid": src_cid, "dst_cid": dst_cid})
+            return doc.get("state") if doc else "DOWN"
+        except Exception:
+            return "DOWN"
+
+    def _link_is_up(self, src_cid: str, dst_cid: str) -> bool:
+        """Check if a link is at least CONTROL_UP."""
+        state = self._get_link_state(src_cid, dst_cid)
+        return state in ("CONTROL_UP", "QUANTUM_UP")
+
     def build_topology(self, full: bool = True):
         color_map = dict()
 
@@ -182,6 +197,22 @@ class ResourceManager:
                         )
                         continue
                     if rcid.direction == "in":
+                        # Filter by link state if QUANTNET_LINK_ADJACENCY is enabled
+                        link_adjacency_enabled = os.environ.get("QUANTNET_LINK_ADJACENCY", "false").lower() == "true"
+                        if link_adjacency_enabled:
+                            # Both directions must be at least CONTROL_UP
+                            if not (self._link_is_up(str(k), str(c.neighbor.systemRef)) and
+                                    self._link_is_up(str(c.neighbor.systemRef), str(k))):
+                                logger.debug(
+                                    f"Skipping edge {k} → {c.neighbor.systemRef}: link not UP"
+                                )
+                                continue
+                            # Annotate with quantum_up if both directions are QUANTUM_UP
+                            quantum_up = (
+                                self._get_link_state(str(k), str(c.neighbor.systemRef)) == "QUANTUM_UP"
+                                and self._get_link_state(str(c.neighbor.systemRef), str(k)) == "QUANTUM_UP"
+                            )
+                            # TODO: pass quantum_up to add_edge if needed
                         add_edge(g, str(k), str(c.neighbor.systemRef), str(c.type))
                     else:
                         logger.error(f"Error: {k}: {cid} out does not match {c.neighbor.systemRef}: {rcid.ID} in")

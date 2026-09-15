@@ -39,6 +39,8 @@ class Monitor(MonitoringPlugin):
                 # Capped collection — append-only, old entries auto-evicted
                 await self._state_db.add(obj.as_dict())
                 logger.info(f"{obj.rid} {obj.eventType} is updated : {obj.as_dict()}")
+            elif obj.eventType == "link_state_update":
+                self._handle_link_state_update(obj)
             else:
                 doc = obj.as_dict()
                 doc["created_at"] = datetime.now(timezone.utc)
@@ -49,6 +51,39 @@ class Monitor(MonitoringPlugin):
                     logger.info(f"{obj.rid} {obj.eventType} is updated : {obj.value}")
         except Exception as e:
             logger.warning(f"Failed to update resource : {e}")
+
+    def _handle_link_state_update(self, event):
+        """Handle link state update events from LinkAdjacencyManager."""
+        logger.debug(
+            "Link state update: %s → %s = %s",
+            event.get("src_cid"), event.get("dst_cid"), event.get("state"),
+        )
+        try:
+            # Fire-and-forget update to link_state collection (upsert)
+            import asyncio
+            asyncio.create_task(self._update_link_state(event))
+        except Exception as e:
+            logger.debug("Could not handle link_state_update: %s", e)
+
+    async def _update_link_state(self, event):
+        """Async update of link state, notifies resource manager."""
+        try:
+            link_db = DB().handler(DBmodel.LinkState)
+            await link_db.replace_one(
+                {"src_cid": str(event.get("src_cid")), "dst_cid": str(event.get("dst_cid"))},
+                {
+                    "src_cid": str(event.get("src_cid")),
+                    "dst_cid": str(event.get("dst_cid")),
+                    "state": str(event.get("state")),
+                    "timestamp": str(event.get("timestamp")),
+                },
+                upsert=True,
+            )
+            # Notify resource manager if available (optional)
+            if hasattr(self.context, "resource_mgr") and self.context.resource_mgr:
+                self.context.resource_mgr.set_topo_updated()
+        except Exception as e:
+            logger.debug("Could not update link state: %s", e)
 
     async def handle_get_tasks(self, request):
         logger.debug(f"Received getTasks request: {request}")
