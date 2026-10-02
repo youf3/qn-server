@@ -11,6 +11,7 @@ class DBmodel():
     PingPong = "PingPong"
     Blob = "Blob"
     LinkState = "LinkState"
+    User = "User"
 
 # TODO: Make Async version of AbstractDatabase (AsyncAbstractDatabase) to support async database operations
 
