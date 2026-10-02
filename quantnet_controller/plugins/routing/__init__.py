@@ -26,6 +26,16 @@ class PathFinder(RoutingPlugin):
         # create the network including graph from the topology
         self._network = NetworkGenerator(resource_mgr=self.ctx.rm)
 
+    def refresh(self):
+        """Rebuild the routing graph from current topology.
+
+        Called by the monitoring plugin when link state changes.
+        Safe to call before start() (no-op if network not initialized).
+        """
+        if self._network is not None:
+            log.info("Refreshing routing graph due to topology change")
+            self._network.refresh_topology()
+
     async def find_shortest_path(self, src, dst) -> Path:
         """
         find one shortest path through a quantum network topology

@@ -25,6 +25,10 @@ class ResourceManager:
         self._is_topo_updated = False
         self._is_topo_full = False
 
+    def set_topo_updated(self):
+        """Mark topology as dirty so get_topology() rebuilds on next call."""
+        self._is_topo_updated = True
+
     def node_loader(self, data=None):
         if data is None:
             raise ValueError("node_loader: data parameter cannot be None")
@@ -111,18 +115,25 @@ class ResourceManager:
             ret.append(self.node_loader(node))
         return ret
 
-    def _get_link_state(self, src_cid: str, dst_cid: str) -> str:
-        """Get link state from link_state collection."""
+    def _get_link_state(self, src_cid: str, dst_cid: str, channel_id: str = None) -> str:
+        """Get link state from link_state collection.
+
+        When *channel_id* is given the lookup is per-channel; otherwise it
+        falls back to a per-neighbor query for backward compatibility.
+        """
         try:
             link_db = DB().handler(DBmodel.LinkState)
-            doc = link_db.get({"src_cid": src_cid, "dst_cid": dst_cid})
+            query = {"src_cid": src_cid, "dst_cid": dst_cid}
+            if channel_id is not None:
+                query["channel_id"] = channel_id
+            doc = link_db.get(query)
             return doc.get("state") if doc else "DOWN"
         except Exception:
             return "DOWN"
 
-    def _link_is_up(self, src_cid: str, dst_cid: str) -> bool:
+    def _link_is_up(self, src_cid: str, dst_cid: str, channel_id: str = None) -> bool:
         """Check if a link is at least CONTROL_UP."""
-        state = self._get_link_state(src_cid, dst_cid)
+        state = self._get_link_state(src_cid, dst_cid, channel_id)
         return state in ("CONTROL_UP", "QUANTUM_UP")
 
     def build_topology(self, full: bool = True):
@@ -200,17 +211,21 @@ class ResourceManager:
                         # Filter by link state if QUANTNET_LINK_ADJACENCY is enabled
                         link_adjacency_enabled = os.environ.get("QUANTNET_LINK_ADJACENCY", "false").lower() == "true"
                         if link_adjacency_enabled:
-                            # Both directions must be at least CONTROL_UP
-                            if not (self._link_is_up(str(k), str(c.neighbor.systemRef)) and
-                                    self._link_is_up(str(c.neighbor.systemRef), str(k))):
+                            src_node = str(k)
+                            dst_node = str(c.neighbor.systemRef)
+                            src_ch = str(cid)
+                            dst_ch = str(c.neighbor.channelRef)
+                            # Both directions must be at least CONTROL_UP (per-channel)
+                            if not (self._link_is_up(src_node, dst_node, src_ch) and
+                                    self._link_is_up(dst_node, src_node, dst_ch)):
                                 logger.debug(
-                                    f"Skipping edge {k} → {c.neighbor.systemRef}: link not UP"
+                                    f"Skipping edge {src_node}:{src_ch} → {dst_node}:{dst_ch}: link not UP"
                                 )
                                 continue
                             # Annotate with quantum_up if both directions are QUANTUM_UP
                             quantum_up = (
-                                self._get_link_state(str(k), str(c.neighbor.systemRef)) == "QUANTUM_UP"
-                                and self._get_link_state(str(c.neighbor.systemRef), str(k)) == "QUANTUM_UP"
+                                self._get_link_state(src_node, dst_node, src_ch) == "QUANTUM_UP"
+                                and self._get_link_state(dst_node, src_node, dst_ch) == "QUANTUM_UP"
                             )
                             # TODO: pass quantum_up to add_edge if needed
                         add_edge(g, str(k), str(c.neighbor.systemRef), str(c.type))

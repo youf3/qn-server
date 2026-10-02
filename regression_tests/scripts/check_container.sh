@@ -1,5 +1,5 @@
 # List of containers to check
-CONTAINERS=("agent-1" "agent-2" "agent-3"  "agent-4" "controller" "portal")
+CONTAINERS=("agent-1" "agent-2" "agent-3" "agent-4" "agent-5" "agent-6" "agent-7" "agent-8" "controller" "portal")
 
 HAS_ERROR=0
 for CONTAINER in "${CONTAINERS[@]}"; do
