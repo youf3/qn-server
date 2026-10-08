@@ -92,11 +92,13 @@ class Monitor(MonitoringPlugin):
             if hasattr(self._context, "rm") and self._context.rm:
                 self._context.rm.set_topo_updated()
             # Notify routing plugin to rebuild its cached graph
-            if hasattr(self._context, "router") and self._context.router:
-                try:
-                    self._context.router.refresh()
-                except Exception as e:
-                    logger.debug("Could not notify router of topology change: %s", e)
+            # Only refresh on states that affect routing (skip INIT which is frequent)
+            if state in ("CONTROL_UP", "QUANTUM_UP", "DOWN"):
+                if hasattr(self._context, "router") and self._context.router:
+                    try:
+                        self._context.router.refresh()
+                    except Exception as e:
+                        logger.debug("Could not notify router of topology change: %s", e)
         except Exception as e:
             logger.warning("Could not update link state in DB: %s", e)
 
