@@ -257,6 +257,52 @@ class RequestTranslator:
         status = self.context.rm.get_node_state(agent_id)
         return status["value"] == "IN_SPEC" if status else False
 
+    def get_prefill_slots(self, agent_ids):
+        """
+        Query prefill slot requirements from agent registration data.
+
+        Reads the `capabilities` field from each agent's registered node data
+        and extracts `continuous_entanglement` and `prefill_slots` fields.
+
+        :param agent_ids: List of agent identifiers to query.
+        :type agent_ids: list[str]
+
+        :returns: Dict mapping agent_id to prefill_slot_count (int). Returns 0
+                  for agents without capabilities or where continuous_entanglement
+                  is not True.
+        :rtype: dict[str, int]
+        """
+        result = {}
+        try:
+            nodes = self.context.rm.get_nodes(*agent_ids)
+            for node in nodes:
+                agent_id = str(node.systemSettings.ID)
+                prefill_slots = 0
+                
+                # Check if capabilities field exists (extended property)
+                capabilities = getattr(node, 'capabilities', None)
+                if capabilities:
+                    # Capabilities may be dict-like or object-like depending on
+                    # python_jsonschema_objects wrapping. Try both access patterns.
+                    try:
+                        continuous = capabilities.get('continuous_entanglement')
+                    except (AttributeError, TypeError):
+                        continuous = getattr(capabilities, 'continuous_entanglement', False)
+                    
+                    if continuous:
+                        try:
+                            prefill_slots = capabilities.get('prefill_slots', 0)
+                        except (AttributeError, TypeError):
+                            prefill_slots = getattr(capabilities, 'prefill_slots', 0)
+                
+                result[agent_id] = prefill_slots
+        except Exception as e:
+            logger.warning(f"Failed to query prefill slots from agents {agent_ids}: {e}")
+            # Fail safe: return 0 for all agents
+            result = {aid: 0 for aid in agent_ids}
+        
+        return result
+
     async def start_experiment(self, parameters, handle_result=None):
         """
         Start experiment processing.
@@ -348,7 +394,7 @@ class RequestTranslator:
         result = self.context.rm.get_exp_results(id)
         return result
 
-    def find_common_slot(self, agent_ids, availabilities, exp_def):
+    def find_common_slot(self, agent_ids, availabilities, exp_def, prefill_map=None):
         """
         Determine common timeslots across multiple agents.
 
@@ -358,6 +404,9 @@ class RequestTranslator:
         :type availabilities: dict
         :param exp_def: Experiment definition containing agent sequences.
         :type exp_def: Experiment
+        :param prefill_map: Optional mapping of agent IDs to prefill slot counts.
+                           When present, total slots per agent = experiment slots + prefill slots.
+        :type prefill_map: dict or None
 
         :returns: Dictionary mapping each agent ID to its allocated slot list.
         :rtype: dict
@@ -365,13 +414,17 @@ class RequestTranslator:
         logger.info(f"Finding common timeslots from agents {agent_ids}")
         slots = {}
 
-        # Build the search pattern as the longest per-agent sequence, each capped to
-        # MAX_TIMESLOTS.  get_timeslot_mask() can return millions of slots for idle-wait
-        # agents (e.g. LBNL-C waiting for the whole experiment), which would exceed
-        # common_bit's length and make bitarray.find() return -1.
+        if prefill_map is None:
+            prefill_map = {}
+
+        # Build the search pattern as the longest per-agent total (sequence + prefill).
+        # Each is capped to MAX_TIMESLOTS. get_timeslot_mask() can return millions of
+        # slots for idle-wait agents (e.g. LBNL-C waiting for the whole experiment),
+        # which would exceed common_bit's length and make bitarray.find() return -1.
         max_needed = max(
-            min(len(get_timeslot_mask(i.sequences)), Constants.MAX_TIMESLOTS)
-            for i in exp_def.agent_sequences
+            min(len(get_timeslot_mask(i.sequences)) + prefill_map.get(agent_ids[idx], 0),
+                Constants.MAX_TIMESLOTS)
+            for idx, i in enumerate(exp_def.agent_sequences)
         )
         slot_mask = bitarray("1" * max_needed)
 
@@ -389,9 +442,12 @@ class RequestTranslator:
 
         for i in range(len(exp_def.agent_sequences)):
             agent_sequence = exp_def.agent_sequences[i]
+            agent_id = agent_ids[i]
             seq_length = min(len(get_timeslot_mask(agent_sequence.sequences)), Constants.MAX_TIMESLOTS)
-            slot = list(range(start_index, start_index + seq_length))
-            slots[agent_ids[i]] = slot
+            prefill_slots = prefill_map.get(agent_id, 0)
+            total_length = seq_length + prefill_slots
+            slot = list(range(start_index, start_index + total_length))
+            slots[agent_id] = slot
         return slots
 
     async def get_slots_to_allocate(self, agent_ids, exp_def):
@@ -416,7 +472,10 @@ class RequestTranslator:
             param["numSlots"] = Constants.MAX_TIMESLOTS
 
             availabilities = await self.context.scheduler.get_timeslots(agent_ids, param)
-        slots_to_allocate = self.find_common_slot(agent_ids, availabilities, exp_def)
+        
+        # Query prefill slot requirements for all agents
+        prefill_map = self.get_prefill_slots(agent_ids)
+        slots_to_allocate = self.find_common_slot(agent_ids, availabilities, exp_def, prefill_map=prefill_map)
 
         return start_time, slots_to_allocate
 
@@ -444,6 +503,7 @@ class RequestTranslator:
 
         try:
             start_time, timeslots = await self.get_slots_to_allocate(agent_ids, exp)
+            prefill_map = self.get_prefill_slots(agent_ids)
             submit_tasks = []
 
             for idx in range(len(exp.agent_sequences)):
@@ -452,6 +512,25 @@ class RequestTranslator:
                 timeslot_mask = timeslots[agent_id]
                 logger.info(f"timeslots: {timeslots[agent_id]}")
                 allocations = []
+
+                # Insert prefill allocation if agent supports continuous entanglement
+                prefill_slots_count = prefill_map.get(agent_id, 0)
+                if prefill_slots_count > 0:
+                    assigned_prefill = list(range(len(timeslot_mask)))[:prefill_slots_count]
+                    if assigned_prefill:
+                        prefill_allocation = {
+                            "expName": "entanglement_prefill",
+                            "className": "entanglement_prefill",
+                            "parameters": rpc_exp_params,
+                            "timeSlot": assigned_prefill,
+                        }
+                        allocations.append(prefill_allocation)
+                        logger.info(
+                            f"Inserting prefill allocation ({prefill_slots_count} slots) "
+                            f"for agent {agent_id}"
+                        )
+                        # Consume prefill slots from the mask
+                        timeslot_mask = timeslot_mask[prefill_slots_count:]
 
                 for sequence in agent_sequence.sequences:
                     timeslot = get_num_timeslot(sequence)

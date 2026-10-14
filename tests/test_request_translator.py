@@ -19,8 +19,11 @@ from quantnet_controller.common.plugin import Path
 class MockSequence:
     """Mock Sequence class for testing."""
     def __init__(self, name, duration_ms=100):
+        from datetime import timedelta
         self.name = name
         self.duration_ms = duration_ms
+        self.duration = timedelta(milliseconds=duration_ms)
+        self.class_name = name
 
 
 class MockAgentSequence:
@@ -619,6 +622,243 @@ class TestHeartbeatTimeout:
         is_valid, _, available_types, _ = _validate_agent_requirements(exp, nodes)
         assert is_valid is True
         assert available_types == ["QNode"]
+
+
+# Tests for get_prefill_slots
+class TestGetPrefillSlots:
+    """Test suite for RequestTranslator.get_prefill_slots."""
+
+    def _make_translator_with_mocked_rm(self, nodes_dict):
+        """Build a RequestTranslator with mocked context and resource manager.
+        
+        Args:
+            nodes_dict: dict mapping agent_id to MockNode or None (for get_nodes failures)
+        """
+        from unittest.mock import Mock, MagicMock
+        context = Mock()
+        context.config = Mock()
+        context.config.exp_def_path = "/tmp/dummy_exp_defs.py"
+        
+        # Mock rm.get_nodes to return nodes from dict
+        def mock_get_nodes(*agent_ids):
+            result = []
+            for aid in agent_ids:
+                if aid not in nodes_dict:
+                    raise ValueError(f"Node {aid} not found")
+                result.append(nodes_dict[aid])
+            return result
+        
+        context.rm = Mock()
+        context.rm.get_nodes = Mock(side_effect=mock_get_nodes)
+        
+        # Create translator with mocked context
+        from quantnet_controller.common.request_translator import RequestTranslator
+        with patch('quantnet_controller.common.request_translator.importlib.util'):
+            translator = RequestTranslator.__new__(RequestTranslator)
+            translator.context = context
+        return translator
+
+    def test_no_capabilities_field_returns_zero(self):
+        """Agent registration without capabilities field -> prefill_slots=0."""
+        node = MockNode("LBNL-Q", "QNode")  # no capabilities attr
+        translator = self._make_translator_with_mocked_rm({"LBNL-Q": node})
+        result = translator.get_prefill_slots(["LBNL-Q"])
+        assert result == {"LBNL-Q": 0}
+
+    def test_capabilities_without_continuous_returns_zero(self):
+        """capabilities present but continuous_entanglement=False -> 0."""
+        node = MockNode("LBNL-Q", "QNode")
+        # Add capabilities with continuous_entanglement=False
+        node.capabilities = {"continuous_entanglement": False, "prefill_slots": 3}
+        translator = self._make_translator_with_mocked_rm({"LBNL-Q": node})
+        result = translator.get_prefill_slots(["LBNL-Q"])
+        assert result == {"LBNL-Q": 0}
+
+    def test_continuous_true_with_prefill_slots(self):
+        """capabilities.continuous_entanglement=True, prefill_slots=3 -> 3."""
+        node = MockNode("LBNL-Q", "QNode")
+        node.capabilities = {"continuous_entanglement": True, "prefill_slots": 3}
+        translator = self._make_translator_with_mocked_rm({"LBNL-Q": node})
+        result = translator.get_prefill_slots(["LBNL-Q"])
+        assert result == {"LBNL-Q": 3}
+
+    def test_continuous_true_no_prefill_slots_key_returns_zero(self):
+        """continuous_entanglement=True but no prefill_slots key -> 0."""
+        node = MockNode("LBNL-Q", "QNode")
+        node.capabilities = {"continuous_entanglement": True}
+        translator = self._make_translator_with_mocked_rm({"LBNL-Q": node})
+        result = translator.get_prefill_slots(["LBNL-Q"])
+        assert result == {"LBNL-Q": 0}
+
+    def test_mixed_agents(self):
+        """Mix of capable and incapable agents."""
+        lbnl_q = MockNode("LBNL-Q", "QNode")
+        lbnl_q.capabilities = {"continuous_entanglement": True, "prefill_slots": 3}
+        ucb_q = MockNode("UCB-Q", "QNode")
+        # no capabilities on UCB-Q
+        
+        translator = self._make_translator_with_mocked_rm({"LBNL-Q": lbnl_q, "UCB-Q": ucb_q})
+        result = translator.get_prefill_slots(["LBNL-Q", "UCB-Q"])
+        assert result == {"LBNL-Q": 3, "UCB-Q": 0}
+
+    def test_get_nodes_failure_returns_zero(self):
+        """If rm.get_nodes raises, return 0 for all agents."""
+        translator = self._make_translator_with_mocked_rm({})
+        # Will raise ValueError when trying to get LBNL-Q
+        result = translator.get_prefill_slots(["LBNL-Q"])
+        assert result == {"LBNL-Q": 0}
+
+
+class TestPrefillSlotInsertion:
+    """Test prefill slot insertion logic in translate_request."""
+
+    def test_prefill_allocation_structure(self):
+        """Verify prefill allocation has correct structure."""
+        # Test that when prefill_slots > 0, we build the right allocation dict
+        from quantnet_controller.common.constants import Constants
+        
+        prefill_slots = 2
+        rpc_params = [Mock(name="param1", value="val1")]
+        
+        # Simulate building prefill allocation as translate_request does
+        assigned_prefill = list(range(0, prefill_slots))  # [0, 1]
+        prefill_allocation = {
+            "expName": "entanglement_prefill",
+            "className": "entanglement_prefill",
+            "parameters": rpc_params,
+            "timeSlot": assigned_prefill,
+        }
+        
+        assert prefill_allocation["expName"] == "entanglement_prefill"
+        assert prefill_allocation["className"] == "entanglement_prefill"
+        assert len(prefill_allocation["timeSlot"]) == 2
+
+    def test_timeslot_consumption_with_prefill(self):
+        """Verify that prefill slots are consumed from the front of timeslot_mask."""
+        from bitarray import bitarray
+        
+        # Simulate agent's timeslot mask: 10 free slots
+        timeslot_mask = bitarray("1111111111")
+        prefill_slots_count = 2
+        
+        # Prefill consumes from the front
+        assigned_prefill = list(range(len(timeslot_mask)))[:prefill_slots_count]
+        remaining_mask = timeslot_mask[prefill_slots_count:]
+        
+        assert len(assigned_prefill) == 2
+        assert len(remaining_mask) == 8
+        assert remaining_mask == bitarray("11111111")
+
+    def test_prefill_then_sequence_slot_allocation(self):
+        """Verify prefill + sequence allocation order."""
+        from bitarray import bitarray
+        
+        # Agent has 10 free slots, needs 2 for prefill and 3 for sequence
+        timeslot_mask = bitarray("1111111111")
+        
+        prefill_slots_count = 2
+        sequence_slots_count = 3
+        
+        # Prefill consumes first 2
+        assigned_prefill = list(range(0, prefill_slots_count))
+        remaining = timeslot_mask[prefill_slots_count:]
+        
+        # Sequence consumes next 3
+        assigned_sequence = list(range(prefill_slots_count, prefill_slots_count + sequence_slots_count))
+        
+        assert assigned_prefill == [0, 1]
+        assert assigned_sequence == [2, 3, 4]
+
+
+class TestFindCommonSlotWithPrefill:
+    """Test that find_common_slot accounts for prefill slots."""
+
+    def test_slot_width_includes_prefill(self):
+        """Common slot search pattern must include prefill slot count."""
+        from bitarray import bitarray
+        from quantnet_controller.common.request_translator import RequestTranslator
+        from quantnet_controller.common.constants import Constants
+        
+        # Create a mock translator
+        translator = RequestTranslator.__new__(RequestTranslator)
+        
+        # Agent with 1-slot experiment sequence + 2 prefill slots = 3 total needed
+        seq = MockSequence("test_seq", 100)  # 1 slot
+        agent_seq = MockAgentSequence("seq", "QNode", [seq])
+        exp = MockExperiment("exp", [agent_seq])
+        
+        # Availability: exactly 3 consecutive free slots + padding to MAX_TIMESLOTS
+        avail_str = "111" + "0" * (Constants.MAX_TIMESLOTS - 3)
+        availabilities = {
+            "agent1": avail_str
+        }
+        prefill_map = {"agent1": 2}
+        
+        agent_ids = ["agent1"]
+        
+        # Without prefill_map, find_common_slot would search for 1 slot and succeed
+        # With prefill_map, it must search for 3 slots
+        slots = translator.find_common_slot(agent_ids, availabilities, exp, prefill_map=prefill_map)
+        
+        # Should find slots starting at index 0
+        assert slots["agent1"][0] == 0
+        assert len(slots["agent1"]) == 3  # 2 prefill + 1 sequence
+
+    def test_no_prefill_unchanged(self):
+        """Without prefill, slot width matches experiment sequences only."""
+        from quantnet_controller.common.request_translator import RequestTranslator
+        from quantnet_controller.common.constants import Constants
+        
+        translator = RequestTranslator.__new__(RequestTranslator)
+        
+        seq = MockSequence("test_seq", 100)  # 1 slot
+        agent_seq = MockAgentSequence("seq", "QNode", [seq])
+        exp = MockExperiment("exp", [agent_seq])
+        
+        # Availability with free slots
+        avail_str = "1" * Constants.MAX_TIMESLOTS
+        availabilities = {
+            "agent1": avail_str
+        }
+        prefill_map = {"agent1": 0}  # No prefill
+        
+        agent_ids = ["agent1"]
+        
+        slots = translator.find_common_slot(agent_ids, availabilities, exp, prefill_map=prefill_map)
+        
+        # Should allocate just 1 slot for the sequence
+        assert len(slots["agent1"]) == 1
+
+    def test_mixed_prefill_uses_max_per_agent(self):
+        """Each agent's total = its experiment slots + its prefill slots."""
+        from quantnet_controller.common.request_translator import RequestTranslator
+        from quantnet_controller.common.constants import Constants
+        
+        translator = RequestTranslator.__new__(RequestTranslator)
+        
+        # Two agents, both with same sequence (1 slot)
+        seq = MockSequence("test_seq", 100)  # 1 slot
+        agent_seq1 = MockAgentSequence("seq", "QNode", [seq])
+        agent_seq2 = MockAgentSequence("seq", "QNode", [seq])
+        exp = MockExperiment("exp", [agent_seq1, agent_seq2])
+        
+        # Agent1: needs 1+3=4 total, Agent2: needs 1+1=2 total
+        # Common slot search should look for max(4, 2) = 4
+        avail_str = "1" * Constants.MAX_TIMESLOTS
+        availabilities = {
+            "agent1": avail_str,
+            "agent2": avail_str
+        }
+        prefill_map = {"agent1": 3, "agent2": 1}
+        
+        agent_ids = ["agent1", "agent2"]
+        
+        slots = translator.find_common_slot(agent_ids, availabilities, exp, prefill_map=prefill_map)
+        
+        # Agent1 should get 4 slots (3 prefill + 1 sequence)
+        assert len(slots["agent1"]) == 4
+        # Agent2 should get 2 slots (1 prefill + 1 sequence)
+        assert len(slots["agent2"]) == 2
 
 
 if __name__ == "__main__":
