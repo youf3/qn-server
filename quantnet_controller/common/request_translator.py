@@ -257,51 +257,7 @@ class RequestTranslator:
         status = self.context.rm.get_node_state(agent_id)
         return status["value"] == "IN_SPEC" if status else False
 
-    def get_prefill_slots(self, agent_ids):
-        """
-        Query prefill slot requirements from agent registration data.
 
-        Reads the `capabilities` field from each agent's registered node data
-        and extracts `continuous_entanglement` and `prefill_slots` fields.
-
-        :param agent_ids: List of agent identifiers to query.
-        :type agent_ids: list[str]
-
-        :returns: Dict mapping agent_id to prefill_slot_count (int). Returns 0
-                  for agents without capabilities or where continuous_entanglement
-                  is not True.
-        :rtype: dict[str, int]
-        """
-        result = {}
-        try:
-            nodes = self.context.rm.get_nodes(*agent_ids)
-            for node in nodes:
-                agent_id = str(node.systemSettings.ID)
-                prefill_slots = 0
-                
-                # Check if capabilities field exists (extended property)
-                capabilities = getattr(node, 'capabilities', None)
-                if capabilities:
-                    # Capabilities may be dict-like or object-like depending on
-                    # python_jsonschema_objects wrapping. Try both access patterns.
-                    try:
-                        continuous = capabilities.get('continuous_entanglement')
-                    except (AttributeError, TypeError):
-                        continuous = getattr(capabilities, 'continuous_entanglement', False)
-                    
-                    if continuous:
-                        try:
-                            prefill_slots = capabilities.get('prefill_slots', 0)
-                        except (AttributeError, TypeError):
-                            prefill_slots = getattr(capabilities, 'prefill_slots', 0)
-                
-                result[agent_id] = prefill_slots
-        except Exception as e:
-            logger.warning(f"Failed to query prefill slots from agents {agent_ids}: {e}")
-            # Fail safe: return 0 for all agents
-            result = {aid: 0 for aid in agent_ids}
-        
-        return result
 
     async def start_experiment(self, parameters, handle_result=None):
         """
@@ -473,8 +429,8 @@ class RequestTranslator:
 
             availabilities = await self.context.scheduler.get_timeslots(agent_ids, param)
         
-        # Query prefill slot requirements for all agents
-        prefill_map = self.get_prefill_slots(agent_ids)
+        # Read prefill_map from experiment definition
+        prefill_map = getattr(exp_def, 'prefill_map', None) or {}
         slots_to_allocate = self.find_common_slot(agent_ids, availabilities, exp_def, prefill_map=prefill_map)
 
         return start_time, slots_to_allocate
@@ -503,7 +459,7 @@ class RequestTranslator:
 
         try:
             start_time, timeslots = await self.get_slots_to_allocate(agent_ids, exp)
-            prefill_map = self.get_prefill_slots(agent_ids)
+            prefill_map = getattr(exp, 'prefill_map', None) or {}
             submit_tasks = []
 
             for idx in range(len(exp.agent_sequences)):
