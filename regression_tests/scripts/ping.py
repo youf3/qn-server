@@ -67,5 +67,5 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         dests = [d for d in sys.argv[1:]]
     else:
-        dests = ["LBNL-SWITCH", "UCB-SWITCH", "UCB-Q", "LBNL-Q"]
+        dests = ["LBNL-Q", "UCB-Q", "LBNL-SWITCH", "UCB-SWITCH", "LBNL-BSM", "UCB-BSM", "LBNL-M", "UCB-M"]
     asyncio.run(MyPingPonger(dests, iters=5).main())

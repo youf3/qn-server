@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from quantnet_controller.common.plugin import MonitoringPlugin, PluginType
 from quantnet_mq.schema.models import monitor, Status, agentMonitorTaskResponse
 from quantnet_mq import Code, EventType
-from quantnet_controller.core import AsyncAbstractDatabase as DB, DBmodel
+from quantnet_controller.core import AsyncAbstractDatabase as AsyncDB, DBmodel
 
 logger = logging.getLogger(__name__)
 
@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 class Monitor(MonitoringPlugin):
     def __init__(self, context):
         super().__init__("monitor", PluginType.MONITORING, context)
-        self._db = DB().handler(DBmodel.Monitor)
-        self._state_db = DB().handler(DBmodel.MonitorState)
-        self._node_db = DB().handler(DBmodel.Node)
+        self._db = AsyncDB().handler(DBmodel.Monitor)
+        self._state_db = AsyncDB().handler(DBmodel.MonitorState)
+        self._node_db = AsyncDB().handler(DBmodel.Node)
         logger.info(f"Monitor plugin initialized with DB handler: {self._db}")
         self._msg_commands = [
             ("monitor", self.handle_resource_update)
@@ -39,6 +39,8 @@ class Monitor(MonitoringPlugin):
                 # Capped collection — append-only, old entries auto-evicted
                 await self._state_db.add(obj.as_dict())
                 logger.info(f"{obj.rid} {obj.eventType} is updated : {obj.as_dict()}")
+            elif obj.eventType == "linkStateUpdate":
+                self._handle_link_state_update(obj)
             else:
                 doc = obj.as_dict()
                 doc["created_at"] = datetime.now(timezone.utc)
@@ -49,6 +51,56 @@ class Monitor(MonitoringPlugin):
                     logger.info(f"{obj.rid} {obj.eventType} is updated : {obj.value}")
         except Exception as e:
             logger.warning(f"Failed to update resource : {e}")
+
+    def _handle_link_state_update(self, event):
+        """Handle link state update events from LinkAdjacencyManager."""
+        value = event.value if hasattr(event, "value") else event
+        if isinstance(value, str):
+            import json as _json
+            value = _json.loads(value)
+        logger.info(
+            "Link state update: %s:%s -> %s = %s",
+            value.get("src_cid"), value.get("channel_id"),
+            value.get("dst_cid"), value.get("state"),
+        )
+        try:
+            import asyncio
+            asyncio.create_task(self._update_link_state(value))
+        except Exception as e:
+            logger.debug("Could not handle link_state_update: %s", e)
+
+    async def _update_link_state(self, value):
+        """Async upsert of link state, notifies resource manager."""
+        try:
+            link_db = AsyncDB().handler(DBmodel.LinkState)
+            src_cid = str(value.get("src_cid", ""))
+            dst_cid = str(value.get("dst_cid", ""))
+            channel_id = str(value.get("channel_id", ""))
+            state = str(value.get("state", "DOWN"))
+            timestamp = str(value.get("timestamp", ""))
+            await link_db.upsert(
+                {"src_cid": src_cid, "dst_cid": dst_cid, "channel_id": channel_id},
+                {
+                    "src_cid": src_cid,
+                    "dst_cid": dst_cid,
+                    "channel_id": channel_id,
+                    "state": state,
+                    "timestamp": timestamp,
+                },
+            )
+            # Notify resource manager to invalidate topology cache
+            if hasattr(self._context, "rm") and self._context.rm:
+                self._context.rm.set_topo_updated()
+            # Notify routing plugin to rebuild its cached graph
+            # Only refresh on states that affect routing (skip INIT which is frequent)
+            if state in ("CONTROL_UP", "QUANTUM_UP", "DOWN"):
+                if hasattr(self._context, "router") and self._context.router:
+                    try:
+                        self._context.router.refresh()
+                    except Exception as e:
+                        logger.debug("Could not notify router of topology change: %s", e)
+        except Exception as e:
+            logger.warning("Could not update link state in DB: %s", e)
 
     async def handle_get_tasks(self, request):
         logger.debug(f"Received getTasks request: {request}")
