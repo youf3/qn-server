@@ -32,8 +32,8 @@ def _validate_agent_requirements(exp_def, available_nodes, heartbeat_timeout=Non
         it is considered stale.  Defaults to ``Constants.NODE_HEARTBEAT_TIMEOUT``.
     :type heartbeat_timeout: int | float | None
 
-    :returns: Tuple of (is_valid, required_types, available_types, missing_types)
-    :rtype: tuple
+    :returns: List of reachable (non-stale) nodes filtered by heartbeat timeout.
+    :rtype: list
 
     :raises ValueError: If validation fails with detailed message about missing agents.
     """
