@@ -88,3 +88,23 @@ class TestHandleLinkStateUpdate:
             asyncio.run(mon.handle_resource_update(serialized))
 
         mock_handler.assert_called_once()
+
+
+class TestResourceManagerLinkAdjacencyFilter:
+    def test_link_is_up_classical_vs_quantum(self):
+        """Classical channels require CONTROL_UP or QUANTUM_UP;
+        quantum channels require QUANTUM_UP."""
+        from quantnet_controller.core.managers import ResourceManager
+
+        rm = ResourceManager.__new__(ResourceManager)
+        with patch.object(rm, "_get_link_state", return_value="CONTROL_UP"):
+            assert rm._link_is_up("LBNL-Q", "LBNL-SWITCH", "4", is_quantum=False) is True
+            assert rm._link_is_up("LBNL-Q", "LBNL-SWITCH", "1", is_quantum=True) is False
+
+        with patch.object(rm, "_get_link_state", return_value="QUANTUM_UP"):
+            assert rm._link_is_up("LBNL-Q", "LBNL-SWITCH", "4", is_quantum=False) is True
+            assert rm._link_is_up("LBNL-Q", "LBNL-SWITCH", "1", is_quantum=True) is True
+
+        with patch.object(rm, "_get_link_state", return_value="INIT"):
+            assert rm._link_is_up("LBNL-Q", "LBNL-SWITCH", "4", is_quantum=False) is False
+            assert rm._link_is_up("LBNL-Q", "LBNL-SWITCH", "1", is_quantum=True) is False

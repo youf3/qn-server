@@ -66,10 +66,10 @@ CONVERGENCE_LINKS = {
     ("LBNL-SWITCH", "LBNL-BSM", "13"),   # classic_clk out
     ("LBNL-SWITCH", "LBNL-BSM", "14"),   # quantum out (BSM input 1)
     ("LBNL-SWITCH", "LBNL-BSM", "15"),   # quantum out (BSM input 2)
-    ("LBNL-SWITCH", "UCB-SWITCH", "99"), # quantum out (inter-site)
-    ("UCB-SWITCH", "UCB-Q", "2"),         # classic_bsm_result out
-    ("UCB-SWITCH", "UCB-Q", "3"),         # classic_clk out
-    ("UCB-SWITCH", "LBNL-SWITCH", "100"),# quantum out (inter-site reverse)
+    ("LBNL-SWITCH", "UCB-SWITCH", "99"),   # quantum out (inter-site)
+    ("UCB-SWITCH", "UCB-Q", "2"),          # classic_bsm_result out
+    ("UCB-SWITCH", "UCB-Q", "3"),          # classic_clk out
+    ("UCB-SWITCH", "LBNL-SWITCH", "100"),  # quantum out (inter-site reverse)
     ("LBNL-BSM", "LBNL-SWITCH", "2"),    # classic_bsm_result out
 }
 
@@ -319,6 +319,11 @@ async def main():
         log.info("="*70)
         log.info("PHASE 1: Starting controller and agents")
         log.info("="*70)
+        monitor = LinkMonitor(set(AGENTS.keys()))
+        server = MsgServer(host="localhost")
+        server.subscribe("monitor", monitor.on_message)
+        await server.start()
+
         procs.append(start_controller(log_files))
         await asyncio.sleep(5)
 
@@ -344,10 +349,6 @@ async def main():
         log.info("\n" + "="*70)
         log.info("PHASE 2: Waiting for link convergence (timeout: 90s)")
         log.info("="*70)
-        monitor = LinkMonitor(set(AGENTS.keys()))
-        server = MsgServer(host="localhost")
-        server.subscribe("monitor", monitor.on_message)
-        await server.start()
 
         timeout = 90
         interval = 3
@@ -380,10 +381,8 @@ async def main():
         log.info("PHASE 3: Sending EGP and DQC after link convergence")
         log.info("="*70)
         egp_response = await test_egp()
-        # Accept either OK or Code 3 (INVALID_ARGUMENT) as valid after convergence
-        # The important thing is that it doesn't crash and responds coherently
         egp_code = egp_response.get("status", {}).get("code")
-        egp_ok = egp_code in (Code.OK.value, 3)  # 3 = INVALID_ARGUMENT (no route)
+        egp_ok = egp_code == Code.OK.value
         egp_status = "OK" if egp_ok else "FAIL"
         egp_details = egp_response.get("status", {}).get("message", "unknown")
 
@@ -421,9 +420,8 @@ async def main():
         for agent, path in log_files:
             print(f"  {agent}: {path}")
 
-        # Overall success: key validations are early EGP rejected + links converged + logs clean
-        # Post-convergence EGP is a secondary check (may fail due to other routing issues)
-        success = early_egp_ok and convergence_ok and log_ok
+        # Overall success: early EGP rejected + links converged + post-convergence EGP OK + logs clean
+        success = early_egp_ok and convergence_ok and egp_ok and log_ok
         return success
 
     finally:

@@ -287,7 +287,7 @@ async def exercise_link_control_rpc(monitor):
     topic = "link/LBNL-Q"
     link_key = ("LBNL-Q", "LBNL-SWITCH", "1")
 
-    # 1. show_detail
+    # 1. show_detail (outbound on LBNL-Q and inbound on LBNL-SWITCH)
     resp = json.loads(
         await client.call(
             "link.control",
@@ -296,8 +296,27 @@ async def exercise_link_control_rpc(monitor):
             timeout=10.0,
         )
     )
-    if resp.get("status") != "ok" or resp.get("data", {}).get("state") != "QUANTUM_UP":
+    out_data = resp.get("data", {})
+    if resp.get("status") != "ok" or out_data.get("state") != "QUANTUM_UP":
         return False, f"show_detail expected QUANTUM_UP, got {resp}"
+    if out_data.get("probe_tx_count", 0) < 1 or out_data.get("probe_ok_count", 0) < 1:
+        return False, f"outbound probe telemetry missing in show_detail: {out_data}"
+
+    sw_resp = json.loads(
+        await client.call(
+            "link.control",
+            {"action": "show_detail", "target": "LBNL-Q:1"},
+            topic="link/LBNL-SWITCH",
+            timeout=10.0,
+        )
+    )
+    in_data = sw_resp.get("data", {})
+    if (
+        sw_resp.get("status") != "ok"
+        or in_data.get("probe_rx_count", 0) < 1
+        or not (in_data.get("last_probe_info") or {}).get("detected")
+    ):
+        return False, f"inbound time-tagger telemetry missing on LBNL-SWITCH: {sw_resp}"
 
     # 2. disconnect -> should transition link to DOWN
     resp = json.loads(

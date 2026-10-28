@@ -131,9 +131,19 @@ class ResourceManager:
         except Exception:
             return "DOWN"
 
-    def _link_is_up(self, src_cid: str, dst_cid: str, channel_id: str = None) -> bool:
-        """Check if a link is at least CONTROL_UP."""
+    QUANTUM_CHANNEL_TYPES = {"quantum", "heraldedconnection", "quantumconnection"}
+
+    def _link_is_up(
+        self, src_cid: str, dst_cid: str, channel_id: str = None, is_quantum: bool = False
+    ) -> bool:
+        """Check if an outbound channel link is operational.
+
+        Quantum channels require QUANTUM_UP (optical probe passed);
+        classical channels require at least CONTROL_UP.
+        """
         state = self._get_link_state(src_cid, dst_cid, channel_id)
+        if is_quantum:
+            return state == "QUANTUM_UP"
         return state in ("CONTROL_UP", "QUANTUM_UP")
 
     def build_topology(self, full: bool = True):
@@ -215,19 +225,16 @@ class ResourceManager:
                             dst_node = str(c.neighbor.systemRef)
                             src_ch = str(cid)
                             dst_ch = str(c.neighbor.channelRef)
-                            # Both directions must be at least CONTROL_UP (per-channel)
-                            if not (self._link_is_up(src_node, dst_node, src_ch) and
-                                    self._link_is_up(dst_node, src_node, dst_ch)):
+                            is_quantum_ch = str(c.type).lower() in self.QUANTUM_CHANNEL_TYPES
+                            # Outbound channel holds the bilateral hello + optical probe state
+                            if not self._link_is_up(
+                                src_node, dst_node, src_ch, is_quantum=is_quantum_ch
+                            ):
                                 logger.debug(
-                                    f"Skipping edge {src_node}:{src_ch} → {dst_node}:{dst_ch}: link not UP"
+                                    f"Skipping edge {src_node}:{src_ch} → {dst_node}:{dst_ch}: "
+                                    f"link not ready (type={c.type})"
                                 )
                                 continue
-                            # Annotate with quantum_up if both directions are QUANTUM_UP
-                            quantum_up = (
-                                self._get_link_state(src_node, dst_node, src_ch) == "QUANTUM_UP"
-                                and self._get_link_state(dst_node, src_node, dst_ch) == "QUANTUM_UP"
-                            )
-                            # TODO: pass quantum_up to add_edge if needed
                         add_edge(g, str(k), str(c.neighbor.systemRef), str(c.type))
                     else:
                         logger.error(f"Error: {k}: {cid} out does not match {c.neighbor.systemRef}: {rcid.ID} in")
