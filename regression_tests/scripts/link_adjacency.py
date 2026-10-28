@@ -30,6 +30,50 @@ log = logging.getLogger(__name__)
 # Resolve workspace root from this script's path
 WORKSPACE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
+
+def make_local_agent_cfg(workspace, template_cfg_path):
+    """
+    Read agent.cfg template and rewrite Docker paths to workspace-absolute paths.
+
+    Replaces /qn-agent/config/ and ../qn-agent/config/ with absolute workspace paths.
+
+    Args:
+        workspace: Absolute path to workspace root
+        template_cfg_path: Path to the template agent.cfg
+
+    Returns:
+        Path to temporary agent.cfg with rewritten paths
+    """
+    with open(template_cfg_path, 'r') as f:
+        lines = f.readlines()
+
+    # Process line by line: replace qn-agent/config paths with workspace absolute path
+    # Be careful to avoid double-replacement by checking the source pattern first
+    workspace_cfg_path = os.path.join(workspace, 'qn-agent', 'config') + '/'
+    new_lines = []
+    for line in lines:
+        if 'path=' in line and 'qn-agent/config/' in line:
+            # First try relative path
+            if '../qn-agent/config/' in line:
+                line = line.replace('../qn-agent/config/', workspace_cfg_path)
+            # Then try absolute path (only if relative wasn't already replaced)
+            elif '/qn-agent/config/' in line:
+                line = line.replace('/qn-agent/config/', workspace_cfg_path)
+        new_lines.append(line)
+
+    # Write to temp file
+    temp_file = tempfile.NamedTemporaryFile(
+        mode='w',
+        prefix='agent_cfg_',
+        suffix='.cfg',
+        delete=False
+    )
+    temp_file.writelines(new_lines)
+    temp_file.close()
+
+    return temp_file.name
+
+
 # Expected outbound links: (src_cid, dst_cid, channel_id) -> expected_state
 EXPECTED_LINKS = {
     # LBNL-Q outbound
@@ -71,7 +115,9 @@ AGENTS = {
 
 
 def start_controller():
-    """Start the quantnet controller as a subprocess."""
+    """Start the quantnet controller as a subprocess with output redirection."""
+    logfile = os.path.join(tempfile.gettempdir(), "link_adj_controller.log")
+    log_file = open(logfile, "w")
     cmd = [
         sys.executable,
         "-m", "quantnet_controller.cli",
@@ -83,24 +129,37 @@ def start_controller():
     ]
     env = os.environ.copy()
     env["QUANTNET_LINK_ADJACENCY"] = "true"
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, env=env)
+    proc._logfile = logfile
+    proc._log_file = log_file
     return proc
 
 
 def start_agent(agent_id, node_config):
-    """Start a quantnet agent as a subprocess."""
+    """Start a quantnet agent as a subprocess with output redirection."""
+    logfile = os.path.join(tempfile.gettempdir(), f"link_adj_{agent_id}.log")
+    log_file = open(logfile, "w")
+    
+    # Create a local agent.cfg with workspace-absolute paths
+    local_agent_cfg = make_local_agent_cfg(
+        WORKSPACE,
+        os.path.join(WORKSPACE, "qn-agent", "config", "agent.cfg")
+    )
+    
     cmd = [
         sys.executable,
         "-m", "quantnet_agent.cli",
         "-a", agent_id,
         "-n", node_config,
-        "-c", os.path.join(WORKSPACE, "qn-agent", "config", "agent.cfg"),
+        "-c", local_agent_cfg,
         "--mq-broker-host", "localhost",
         "--no-repl",
         "--interpreter-path", os.path.join(WORKSPACE, "qn-plugins", "plugins", "pingpong", "interpreter"),
         "--schema-path", os.path.join(WORKSPACE, "qn-plugins", "plugins", "schema"),
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+    proc._logfile = logfile
+    proc._log_file = log_file
     return proc
 
 
@@ -116,6 +175,46 @@ def terminate_all(procs):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+def check_logs(procs):
+    """Check all process logs for errors."""
+    ERROR_PATTERNS = [
+        "Traceback",
+        "FileNotFoundError",
+        "Errno",
+        "InvalidStateError",
+        "Task exception was never retrieved",
+    ]
+    # Patterns to exclude (acceptable errors when running --no-repl)
+    EXCLUDE_PATTERNS = [
+        "Timeout awaiting RPC response",  # Expected with --no-repl
+    ]
+    
+    errors = []
+    for proc in procs:
+        if not hasattr(proc, "_logfile"):
+            continue
+        try:
+            if hasattr(proc, "_log_file"):
+                proc._log_file.flush()
+            with open(proc._logfile) as f:
+                log_content = f.read()
+            
+            for pattern in ERROR_PATTERNS:
+                if pattern in log_content:
+                    # Extract the matching lines for context, excluding acceptable ones
+                    matching_lines = [line for line in log_content.split('\n') 
+                                    if pattern in line and not any(exc in line for exc in EXCLUDE_PATTERNS)]
+                    if matching_lines:
+                        errors.append(f"{os.path.basename(proc._logfile)}: {pattern} found")
+                        # Only report first 3 matching lines to avoid spam
+                        for line in matching_lines[:3]:
+                            if line.strip():
+                                errors.append(f"  → {line[:100]}")  # Truncate long lines
+        except Exception as e:
+            log.debug("Error reading log %s: %s", proc._logfile, e)
+    return errors
 
 
 class LinkMonitor:
@@ -223,12 +322,12 @@ async def main():
             elapsed += interval
             is_converged, failures = monitor.check_convergence(EXPECTED_LINKS)
             n_ok = len(EXPECTED_LINKS) - len(failures)
-            
+
             # Track the high-water mark
             if n_ok > max_converged_count:
                 max_converged_count = n_ok
                 max_converged_time = elapsed
-            
+
             print(f"[{elapsed:3d}s] {n_ok}/{len(EXPECTED_LINKS)} links converged" +
                   (f" (new high: {max_converged_count})" if n_ok == max_converged_count else ""),
                   flush=True)
@@ -240,6 +339,15 @@ async def main():
 
         # 5. Print summary
         all_ok = print_summary(monitor, EXPECTED_LINKS)
+
+        # 6. Check logs for errors before declaring success
+        log.info("Checking process logs for errors...")
+        log_errors = check_logs(procs)
+        if log_errors:
+            log.error("Log errors found:")
+            for err in log_errors:
+                log.error(err)
+            return False
 
         # Success if we achieved full convergence OR if most links converged at some point
         if converged:

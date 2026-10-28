@@ -47,11 +47,16 @@ def make_local_agent_cfg(workspace, template_cfg_path):
     with open(template_cfg_path, 'r') as f:
         content = f.read()
     
-    # Replace Docker absolute paths with workspace-absolute paths
-    content = content.replace(
-        '/qn-agent/config/',
-        os.path.join(workspace, 'qn-agent', 'config') + '/'
-    )
+    # Replace relative and Docker absolute paths with workspace-absolute paths
+    abs_cfg_dir = os.path.join(workspace, 'qn-agent', 'config') + '/'
+    lines = []
+    for line in content.splitlines(keepends=True):
+        if '../qn-agent/config/' in line:
+            line = line.replace('../qn-agent/config/', abs_cfg_dir)
+        elif '/qn-agent/config/' in line:
+            line = line.replace('/qn-agent/config/', abs_cfg_dir)
+        lines.append(line)
+    content = ''.join(lines)
     
     # Write to temp file
     temp_file = tempfile.NamedTemporaryFile(
