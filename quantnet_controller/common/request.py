@@ -39,10 +39,10 @@ class Request:
     """First-class object to track all requests in the system."""
 
     # Constructor parameters - store serialized data
-    # payload_data: Optional[Dict[str, Any]]
     request_type: RequestType
     parameters: Dict[str, Any] = field(default_factory=dict)
     rid: Optional[str] = None
+    owner: Optional[str] = None
 
     # Auto-generated fields (not in constructor)
     id: str = field(init=False)
@@ -285,7 +285,7 @@ class RequestManager:
         """
         return cls._shared_active_requests
 
-    def new_request(self, payload, parameters=None, rid=None, func=None):
+    def new_request(self, payload, parameters=None, rid=None, func=None, owner=None):
         """
         Create and register a new :class:`~quantnet_controller.common.request.Request`.
 
@@ -300,15 +300,20 @@ class RequestManager:
         :param func: Optional custom async callable for ``PROTOCOL`` requests.
                      Signature should be ``async def func(request: Request) -> Code``.
         :type func: Callable[[Request], Awaitable[Code]] | None
+        :param owner: Optional owner identifier for the request
+        :type owner: str | None
 
         :returns: The newly created :class:`Request` instance, already stored in the
                   in‑memory registry and persisted to the database.
         :rtype: Request
         """
-        # payload_data = json.loads(payload.serialize())
-
-        request = Request(request_type=self.request_type, parameters=asdict(parameters), rid=rid)
-        request.func = func  # Set func as private attribute after creation
+        request = Request(
+            request_type=self.request_type,
+            parameters=asdict(parameters),
+            rid=rid,
+            owner=owner,
+        )
+        request.func = func
         request.payload = payload
 
         # Store in shared memory and DB
@@ -348,6 +353,7 @@ class RequestManager:
                     request_type=RequestType(record["type"]),
                     parameters=record.get("parameters", {}),
                     rid=record["id"],
+                    owner=record.get("owner"),
                 )
                 req.payload = record.get("payload")
                 # Restore status object
@@ -401,6 +407,7 @@ class RequestManager:
                     request_type=RequestType(record["type"]),
                     parameters=record.get("parameters", {}),
                     rid=rid,
+                    owner=record.get("owner"),
                 )
                 request.payload = record.get("payload")
                 # Restore status object

@@ -75,7 +75,8 @@ class ExperimentProtocol(ProtocolPlugin):
 
             # Create Request object through RequestManager
             # Payload encapsulates the plugin request (agentIds, expName, expParameters)
-            req = self.request_manager.new_request(payload=payload, parameters=parameters)
+            owner = getattr(payload.payload.parameters, 'owner', None)
+            req = self.request_manager.new_request(payload=payload, parameters=parameters, owner=owner)
 
             # Schedule the request (non-blocking, immediate execution)
             rc = await self.request_manager.schedule(req, blocking=False)
@@ -120,6 +121,11 @@ class ExperimentProtocol(ProtocolPlugin):
                     if agent_ids_filter:
                         # Filter RequestManager results
                         exps = [e for e in exps if any(aid in agent_ids_filter for aid in (e.get("agent_ids") or e.get("agentIds") or []))]
+                    
+                    # Filter by owner if specified
+                    owner_filter = params.get("owner")
+                    if owner_filter:
+                        exps = [e for e in exps if e.get("owner") == owner_filter]
 
                 # Sort by created_at descending
                 exps.sort(key=lambda x: x.get("created_at", 0), reverse=True)
