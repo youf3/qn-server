@@ -50,6 +50,34 @@ class TestHandleLinkStateUpdate:
 
         ctx.rm.set_topo_updated.assert_called_once()
 
+    def test_periodic_link_telemetry_skips_topo_and_router_refresh(self):
+        """When state_changed is False (periodic hello/probe telemetry),
+        _update_link_state upserts the DB record but does NOT invalidate
+        the topology cache or rebuild the routing graph."""
+        ctx = make_context()
+        mon = Monitor(ctx)
+        value = {
+            "src_cid": "QPU-1",
+            "dst_cid": "QPU-2",
+            "channel_id": "1",
+            "state": "CONTROL_UP",
+            "state_changed": False,
+            "probe_tx_count": 5,
+            "probe_ok_count": 5,
+        }
+
+        mock_link_db = MagicMock()
+        mock_link_db.upsert = AsyncMock(return_value=True)
+        with patch(
+            "quantnet_controller.plugins.monitoring.AsyncDB"
+        ) as mock_db_cls:
+            mock_db_cls.return_value.handler.return_value = mock_link_db
+            asyncio.run(mon._update_link_state(value))
+
+        mock_link_db.upsert.assert_awaited_once()
+        ctx.rm.set_topo_updated.assert_not_called()
+        ctx.router.refresh.assert_not_called()
+
     def test_link_state_update_upserts_to_db_per_channel(self):
         """The monitoring plugin must upsert the link state keyed by
         (src_cid, dst_cid, channel_id)."""

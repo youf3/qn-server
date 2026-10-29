@@ -58,11 +58,18 @@ class Monitor(MonitoringPlugin):
         if isinstance(value, str):
             import json as _json
             value = _json.loads(value)
-        logger.info(
-            "Link state update: %s:%s -> %s = %s",
-            value.get("src_cid"), value.get("channel_id"),
-            value.get("dst_cid"), value.get("state"),
-        )
+        if value.get("state_changed", True):
+            logger.info(
+                "Link state update: %s:%s -> %s = %s",
+                value.get("src_cid"), value.get("channel_id"),
+                value.get("dst_cid"), value.get("state"),
+            )
+        else:
+            logger.debug(
+                "Periodic link telemetry update: %s:%s -> %s = %s",
+                value.get("src_cid"), value.get("channel_id"),
+                value.get("dst_cid"), value.get("state"),
+            )
         try:
             import asyncio
             asyncio.create_task(self._update_link_state(value))
@@ -78,27 +85,47 @@ class Monitor(MonitoringPlugin):
             channel_id = str(value.get("channel_id", ""))
             state = str(value.get("state", "DOWN"))
             timestamp = str(value.get("timestamp", ""))
+            state_changed = value.get("state_changed", True)
+            doc = {
+                "src_cid": src_cid,
+                "dst_cid": dst_cid,
+                "channel_id": channel_id,
+                "state": state,
+                "timestamp": timestamp,
+            }
+            for extra_key in (
+                "neighbor_channel_id",
+                "direction",
+                "is_quantum",
+                "last_probe_sent",
+                "last_probe_received",
+                "last_probe_status",
+                "last_probe_id",
+                "probe_tx_count",
+                "probe_rx_count",
+                "probe_ok_count",
+                "probe_fail_count",
+                "last_probe_info",
+                "probe_history",
+            ):
+                if extra_key in value:
+                    doc[extra_key] = value[extra_key]
             await link_db.upsert(
                 {"src_cid": src_cid, "dst_cid": dst_cid, "channel_id": channel_id},
-                {
-                    "src_cid": src_cid,
-                    "dst_cid": dst_cid,
-                    "channel_id": channel_id,
-                    "state": state,
-                    "timestamp": timestamp,
-                },
+                doc,
             )
-            # Notify resource manager to invalidate topology cache
-            if hasattr(self._context, "rm") and self._context.rm:
-                self._context.rm.set_topo_updated()
-            # Notify routing plugin to rebuild its cached graph
-            # Only refresh on states that affect routing (skip INIT which is frequent)
-            if state in ("CONTROL_UP", "QUANTUM_UP", "DOWN"):
-                if hasattr(self._context, "router") and self._context.router:
-                    try:
-                        self._context.router.refresh()
-                    except Exception as e:
-                        logger.debug("Could not notify router of topology change: %s", e)
+            if state_changed:
+                # Notify resource manager to invalidate topology cache
+                if hasattr(self._context, "rm") and self._context.rm:
+                    self._context.rm.set_topo_updated()
+                # Notify routing plugin to rebuild its cached graph
+                # Only refresh on states that affect routing (skip INIT which is frequent)
+                if state in ("CONTROL_UP", "QUANTUM_UP", "DOWN"):
+                    if hasattr(self._context, "router") and self._context.router:
+                        try:
+                            self._context.router.refresh()
+                        except Exception as e:
+                            logger.debug("Could not notify router of topology change: %s", e)
         except Exception as e:
             logger.warning("Could not update link state in DB: %s", e)
 
