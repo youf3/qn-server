@@ -238,6 +238,17 @@ async def main():
     procs = []
     log_files = []
     try:
+        # 0. Clean stale nodes from MongoDB so topology only contains the 2 QNodes started below
+        try:
+            import pymongo
+            mongo_client = pymongo.MongoClient("localhost", 27017, serverSelectionTimeoutMS=2000)
+            for db_name in mongo_client.list_database_names():
+                if db_name not in ("admin", "config", "local"):
+                    mongo_client.drop_database(db_name)
+            mongo_client.close()
+        except Exception as e:
+            log.warning(f"Could not clean MongoDB before test: {e}")
+
         # 1. Start controller
         log.info("Starting controller...")
         procs.append(start_controller(log_files))
