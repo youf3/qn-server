@@ -25,7 +25,7 @@ class CalibrationSrcCleanup(Sequence):
 
 class CalibrationSrcSequence(AgentSequences):
     name = "Calibration Source Sequence"
-    node_type = "BSMNode"
+    node_type = "QNode"
     sequences = [CalibrationSrcInit, CalibrationGeneration, CalibrationSrcCleanup]
 
 
