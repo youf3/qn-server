@@ -378,7 +378,8 @@ async def main():
         probe3_results_ok = len(probe_results) == 3 and all(
             r.get("status") == "ok"
             and (r.get("data") or {}).get("status") == "ok"
-            and (r.get("data") or {}).get("rtt_ms") is not None
+            and (r.get("data") or {}).get("detected") is True
+            and (r.get("data") or {}).get("tof") is not None
             for r in probe_results
         )
 

@@ -136,3 +136,66 @@ class TestResourceManagerLinkAdjacencyFilter:
         with patch.object(rm, "_get_link_state", return_value="INIT"):
             assert rm._link_is_up("LBNL-Q", "LBNL-SWITCH", "4", is_quantum=False) is False
             assert rm._link_is_up("LBNL-Q", "LBNL-SWITCH", "1", is_quantum=True) is False
+
+    def test_stale_node_forces_node_state_unknown_and_link_state_down(self):
+        """When a node's last_seen is expired (>20s) or 0, get_node_state returns UNKNOWN
+        and _get_link_state returns DOWN even if LinkState DB still has CONTROL_UP."""
+        import time as _time
+        from quantnet_controller.core.managers import ResourceManager
+
+        rm = ResourceManager.__new__(ResourceManager)
+        rm._node_db = MagicMock()
+        now = _time.time()
+
+        # Stale node (last_seen > 20s ago)
+        rm._node_db.get.return_value = {"systemSettings": {"ID": "QPU-1"}, "last_seen": now - 30.0}
+        st = rm.get_node_state("QPU-1")
+        assert st["value"] == "UNKNOWN"
+        assert rm._get_link_state("BSM-1_2", "QPU-1", "1") == "DOWN"
+
+        # Deregistered node (last_seen == 0)
+        rm._node_db.get.return_value = {"systemSettings": {"ID": "BSM-1_2"}, "last_seen": 0}
+        st2 = rm.get_node_state("BSM-1_2")
+        assert st2["value"] == "UNKNOWN"
+        assert rm._get_link_state("BSM-1_2", "QPU-2", "2") == "DOWN"
+
+    def test_handle_deregister_marks_node_unknown_and_links_down(self):
+        """ResourceManager.handle_deregister clears last_seen, records UNKNOWN state,
+        and transitions all incident links to DOWN."""
+        from types import SimpleNamespace
+        from quantnet_controller.core.managers import ResourceManager, DBmodel
+
+        rm = ResourceManager.__new__(ResourceManager)
+        rm._async_node_db = MagicMock()
+        rm._async_node_db.update = AsyncMock(return_value=True)
+        rm._is_topo_updated = False
+
+        mock_state_db = MagicMock()
+        mock_state_db.add = AsyncMock(return_value=True)
+        mock_link_db = MagicMock()
+        mock_link_db.find = AsyncMock(
+            return_value=[
+                {"src_cid": "BSM-1_2", "dst_cid": "QPU-1", "channel_id": "1", "state": "CONTROL_UP"},
+                {"src_cid": "QPU-2", "dst_cid": "SWITCH-1", "channel_id": "2", "state": "CONTROL_UP"},
+            ]
+        )
+        mock_link_db.upsert = AsyncMock(return_value=True)
+
+        def _handler_side_effect(model):
+            if model == DBmodel.MonitorState:
+                return mock_state_db
+            return mock_link_db
+
+        with patch("quantnet_controller.core.managers.AsyncDB") as mock_db_cls:
+            mock_db_cls.return_value.handler.side_effect = _handler_side_effect
+            asyncio.run(rm.handle_deregister(SimpleNamespace(agentId="BSM-1_2")))
+
+        rm._async_node_db.update.assert_awaited_once_with({"systemSettings.ID": "BSM-1_2"}, "last_seen", 0)
+        mock_state_db.add.assert_awaited_once()
+        added_state = mock_state_db.add.call_args[0][0]
+        assert added_state["rid"] == "BSM-1_2"
+        assert added_state["value"] == "UNKNOWN"
+        mock_link_db.upsert.assert_awaited_once()
+        assert mock_link_db.upsert.call_args[0][1]["state"] == "DOWN"
+        assert rm._is_topo_updated is True
+

@@ -38,6 +38,36 @@ class Monitor(MonitoringPlugin):
             elif obj.eventType == EventType.AGENT_STATE:
                 # Capped collection — append-only, old entries auto-evicted
                 await self._state_db.add(obj.as_dict())
+                state_val = str(getattr(obj, "value", "")).upper()
+                if state_val in ("UNKNOWN", "DEAD"):
+                    await self._node_db.update(
+                        {"systemSettings.ID": str(obj.rid)}, "last_seen", 0
+                    )
+                    try:
+                        link_db = AsyncDB().handler(DBmodel.LinkState)
+                        all_links = await link_db.find()
+                        for ldoc in all_links or []:
+                            if (
+                                isinstance(ldoc, dict)
+                                and (ldoc.get("src_cid") == str(obj.rid) or ldoc.get("dst_cid") == str(obj.rid))
+                                and ldoc.get("state") != "DOWN"
+                            ):
+                                updated = {k: v for k, v in ldoc.items() if k != "_id"}
+                                updated["state"] = "DOWN"
+                                await link_db.upsert(
+                                    {
+                                        "src_cid": ldoc.get("src_cid"),
+                                        "dst_cid": ldoc.get("dst_cid"),
+                                        "channel_id": ldoc.get("channel_id"),
+                                    },
+                                    updated,
+                                )
+                    except Exception as link_exc:
+                        logger.debug(f"Could not mark links DOWN for {obj.rid}: {link_exc}")
+                else:
+                    await self._node_db.update(
+                        {"systemSettings.ID": str(obj.rid)}, "last_seen", time.time()
+                    )
                 logger.info(f"{obj.rid} {obj.eventType} is updated : {obj.as_dict()}")
             elif obj.eventType == "linkStateUpdate":
                 self._handle_link_state_update(obj)

@@ -71,21 +71,49 @@ class CalibrationProtocol(ProtocolPlugin):
                 ],
             )
         elif request.payload.type == "get":
-            exp_id = request.payload.parameters.get("id")
+            params = request.payload.parameters
+            exp_id = getattr(params.get("id"), "_value", params.get("id")) if params else None
+            src = getattr(params.get("src"), "_value", params.get("src")) if params else None
+            dst = getattr(params.get("dst"), "_value", params.get("dst")) if params else None
             if exp_id:
-                calibs = await self.request_manager.get_request(exp_id, raw=True)
-                calibs = [calibs.to_dict()] if calibs else []
+                calib = await self.request_manager.get_request(exp_id, raw=True)
+                calibs = [calib.to_dict() if hasattr(calib, "to_dict") else calib] if calib else []
             else:
+                query_filter = {"type": RequestType.CALIBRATION.value}
+                if src:
+                    query_filter["parameters.exp_params.src"] = src
+                if dst:
+                    query_filter["parameters.exp_params.dst"] = dst
                 calibs = await self.request_manager.find_requests(
-                    filter={"type": RequestType.CALIBRATION.value}, raw=True
+                    filter=query_filter, raw=True, sort=[("created_at", -1)]
                 )
             return agentCalibrationResponse(status=responseStatus(code=rc, value=Code(rc).name), calibrations=calibs)
         elif request.payload.type == "getLast":
+            params = request.payload.parameters
+            exp_id = getattr(params.get("id"), "_value", params.get("id")) if params else None
+            src = getattr(params.get("src"), "_value", params.get("src")) if params else None
+            dst = getattr(params.get("dst"), "_value", params.get("dst")) if params else None
+            query_filter = {"type": RequestType.CALIBRATION.value}
+            if exp_id:
+                query_filter["id"] = exp_id
+            if src:
+                query_filter["parameters.exp_params.src"] = src
+            if dst:
+                query_filter["parameters.exp_params.dst"] = dst
             calibs = await self.request_manager.find_requests(
-                filter={"type": RequestType.CALIBRATION.value}, raw=True, **{"limit": 1, "sort": {"created_at": -1}}
+                filter=query_filter, raw=True, sort=[("created_at", -1)]
             )
+            if calibs:
+                with_result = [
+                    c
+                    for c in calibs
+                    if isinstance(c, dict)
+                    and c.get("result")
+                    and not (set(c.get("result", {}).keys()) <= {"errors"})
+                ]
+                calibs = [with_result[0] if with_result else calibs[0]]
             return agentCalibrationResponse(
-                status=responseStatus(code=rc, value=Code(rc).name), calibrations=calibs.to_dict()
+                status=responseStatus(code=rc, value=Code(rc).name), calibrations=calibs
             )
         else:
             raise Exception(f"unknown calibration type {request.payload.type}")

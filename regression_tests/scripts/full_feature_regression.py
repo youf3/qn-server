@@ -565,11 +565,14 @@ async def test_spg(host="localhost"):
         query_resp = json.loads(
             await client.call("spgQuery", {"rid": rid}, timeout=20.0)
         ) if rid else {}
+        data = query_resp.get("data") or []
+        exp_types = {item.get("result", {}).get("exp_type") for item in data if isinstance(item, dict)}
         ok = (
             req_resp.get("status", {}).get("code") == Code.OK.value
             and query_resp.get("status", {}).get("code") == Code.OK.value
+            and "spg" in exp_types
         )
-        return ok, f"rid={rid[:8]}... status={req_resp.get('status', {}).get('value')}"
+        return ok, f"rid={rid[:8]}... status={req_resp.get('status', {}).get('value')}, agents={len(data)}"
     finally:
         await client.stop()
 
@@ -606,11 +609,14 @@ async def test_egp(host="localhost", expect_reject=False):
             if rid
             else {}
         )
+        data = query_resp.get("data") or []
+        exp_types = {item.get("result", {}).get("exp_type") for item in data if isinstance(item, dict)}
         ok = (
             code == Code.OK.value
             and query_resp.get("status", {}).get("code") == Code.OK.value
+            and "egp" in exp_types
         )
-        return ok, f"rid={rid[:8]}... {msg}"
+        return ok, f"rid={rid[:8]}... {msg} (agents={len(data)})"
     finally:
         await client.stop()
 
@@ -811,11 +817,14 @@ async def test_bsm(host="localhost"):
             if rid
             else {}
         )
+        data = query_resp.get("data") or []
+        exp_types = {item.get("result", {}).get("exp_type") for item in data if isinstance(item, dict)}
         ok = (
             req_resp.get("status", {}).get("code") == Code.OK.value
             and query_resp.get("status", {}).get("code") == Code.OK.value
+            and "bsm" in exp_types
         )
-        return ok, f"rid={rid[:8]}... status={req_resp.get('status', {}).get('value')}"
+        return ok, f"rid={rid[:8]}... status={req_resp.get('status', {}).get('value')}, exp_types={sorted(exp_types)}"
     finally:
         await client.stop()
 
@@ -859,6 +868,18 @@ async def test_agent_stop_and_restart(agent_procs, log_files, collector, topo_di
                 timeout=10.0,
             )
 
+        client.set_handler(
+            "getinfo",
+            None,
+            "quantnet_mq.schema.models.getInfo",
+        )
+
+        # Clear cached states for links involving stopped agents BEFORE stopping them
+        # so we capture both immediate graceful-shutdown DOWN events and switch hold-timer DOWN events
+        for key in list(collector.link_states.keys()):
+            if key[0] in STOP_AGENTS or key[1] in STOP_AGENTS:
+                del collector.link_states[key]
+
         # 2. Stop UCB-Q, LBNL-BSM, and UCB-BSM
         log.info(f"Stopping agents {STOP_AGENTS}...")
         for aid in STOP_AGENTS:
@@ -871,11 +892,6 @@ async def test_agent_stop_and_restart(agent_procs, log_files, collector, topo_di
                     proc.kill()
 
         stopped_ok = all(agent_procs[aid].poll() is not None for aid in STOP_AGENTS)
-
-        # Clear cached states for links involving stopped agents to observe fresh outage updates
-        for key in list(collector.link_states.keys()):
-            if key[0] in STOP_AGENTS or key[1] in STOP_AGENTS:
-                del collector.link_states[key]
 
         # Trigger on-demand probes from LBNL-SWITCH toward stopped LBNL-BSM concurrently
         # so quantum links immediately detect RPC timeout (~5s) and demote from QUANTUM_UP
@@ -910,9 +926,30 @@ async def test_agent_stop_and_restart(agent_procs, log_files, collector, topo_di
                 break
             await asyncio.sleep(1.0)
 
-        outage_ok = stopped_ok and demoted_count >= 2 and down_count >= 2
+        # Verify controller getinfo(type="node") reports UNKNOWN for stopped agents and IN_SPEC for running Q/Switch/BSM agents
+        node_info_raw = json.loads(
+            await client.call("getinfo", {"type": "node", "parameters": {}}, timeout=15.0)
+        )
+        node_states = {
+            n.get("systemSettings", {}).get("ID"): (n.get("state") or {}).get("value")
+            for n in node_info_raw.get("value", [])
+            if isinstance(n, dict)
+        }
+        stopped_unknown_ok = all(node_states.get(aid) == "UNKNOWN" for aid in STOP_AGENTS)
+        running_inspec_ok = all(
+            node_states.get(aid) == "IN_SPEC"
+            for aid in ("LBNL-Q", "LBNL-SWITCH", "UCB-SWITCH")
+        )
+
+        outage_ok = (
+            stopped_ok
+            and demoted_count >= 2
+            and down_count >= 2
+            and stopped_unknown_ok
+            and running_inspec_ok
+        )
         outage_details = (
-            f"stopped={len(STOP_AGENTS)} ({','.join(STOP_AGENTS)}), "
+            f"stopped={len(STOP_AGENTS)} UNKNOWN={stopped_unknown_ok}, "
             f"{down_count}/{len(OUTAGE_WATCH_LINKS)} DOWN ({demoted_count} demoted)"
         )
 

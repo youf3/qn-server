@@ -136,6 +136,14 @@ class Request:
         """Set the callable function."""
         self._payload = value
 
+    @property
+    def experiment_data(self):
+        """Return list of per-agent experiment result dicts for plugin query responses."""
+        if not isinstance(self.result, dict):
+            return None
+        agents = [v for v in self.result.values() if isinstance(v, dict) and "agentId" in v]
+        return agents if agents else None
+
 
 class RequestManager:
     """
@@ -543,6 +551,8 @@ class RequestManager:
                 # Merge payload data into parameters for experiment execution
                 exec_params = request.parameters.copy()
                 exec_params["id"] = request.id
+                if request.payload is not None:
+                    exec_params["payload_data"] = request.payload
 
                 # Execute experiment with result callback
                 # Uses request.add_result to ensure flat structure
@@ -567,6 +577,11 @@ class RequestManager:
                 request.update_status(Code.OK)
 
             self.db_handler.upsert({"id": request.id}, request.to_dict())
+            if self.request_type == RequestType.CALIBRATION and getattr(self.ctx, "msgclient", None):
+                try:
+                    await self.ctx.msgclient.publish(f"calibration-{request.id}", request.to_dict())
+                except Exception as pub_err:
+                    logger.warning(f"Failed to publish calibration update for {request.id}: {pub_err}")
             return rc
 
         except Exception as e:
@@ -576,6 +591,11 @@ class RequestManager:
             traceback.print_exc()
             request.update_status(Code.FAILED, str(e))
             self.db_handler.upsert({"id": request.id}, request.to_dict())
+            if self.request_type == RequestType.CALIBRATION and getattr(self.ctx, "msgclient", None):
+                try:
+                    await self.ctx.msgclient.publish(f"calibration-{request.id}", request.to_dict())
+                except Exception as pub_err:
+                    logger.warning(f"Failed to publish calibration update for {request.id}: {pub_err}")
             return Code.FAILED
 
     def _normalize_return_code(self, rc):

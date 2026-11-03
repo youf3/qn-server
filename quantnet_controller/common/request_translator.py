@@ -319,10 +319,24 @@ class RequestTranslator:
 
         try:
             # Get experiment parameters - could come from params or payload_data
-            exp_params = parameters.get("exp_params", {})
-            # if "payload_data" in parameters:
-            #     # Merge payload data if needed
-            #     exp_params = {**exp_params, **parameters["payload_data"]}
+            exp_params = dict(parameters.get("exp_params") or {})
+            payload_data = parameters.get("payload_data")
+            if payload_data is not None:
+                raw_payload = getattr(payload_data, "payload", payload_data)
+                if hasattr(raw_payload, "serialize"):
+                    try:
+                        raw_payload = json.loads(raw_payload.serialize())
+                    except Exception:
+                        raw_payload = {}
+                elif hasattr(raw_payload, "as_dict"):
+                    try:
+                        raw_payload = raw_payload.as_dict()
+                    except Exception:
+                        raw_payload = {}
+                if isinstance(raw_payload, dict):
+                    for k, v in raw_payload.items():
+                        if isinstance(v, (str, int, float)) and not isinstance(v, bool):
+                            exp_params.setdefault(k, v)
 
             rc = await self.translate_request(parameters["id"], exp_def, exp_params, agents, handle_result)
             if rc != Code.OK:
@@ -455,7 +469,11 @@ class RequestTranslator:
         logger.info(f"translating request: {exp_id}")
         rpc_exp_params = []
         for k, v in exp_params.items():
-            rpc_exp_params.append(Parameter(name=k, value=v))
+            if isinstance(v, (str, int, float)) and not isinstance(v, bool):
+                rpc_exp_params.append(Parameter(name=k, value=v))
+        exp_type = getattr(exp, "exp_type", None)
+        if exp_type and "exp_type" not in exp_params:
+            rpc_exp_params.append(Parameter(name="exp_type", value=exp_type))
 
         try:
             start_time, timeslots = await self.get_slots_to_allocate(agent_ids, exp)

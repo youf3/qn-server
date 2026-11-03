@@ -50,6 +50,7 @@ def get_timeslot_mask(sequences):
 
 
 class Experiment(metaclass=ABCMeta):
+    exp_type = "generic"
 
     @property
     @abstractmethod

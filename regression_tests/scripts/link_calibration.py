@@ -283,6 +283,16 @@ async def run_calibration_tests(collector, host="localhost"):
             bsm_entry = rec.get("result", {}).get("LBNL-BSM", {})
             src_entry = rec.get("result", {}).get("LBNL-Q", {})
             bsm_res = bsm_entry.get("result", {})
+            series = bsm_res.get("pol_tracking_series", [])
+            last_resp = json.loads(
+                await client.call("calibrate", {"type": "getLast", "parameters": {}}, timeout=10.0)
+            )
+            last_cals = last_resp.get("calibrations", [])
+            last_series = (
+                last_cals[0].get("result", {}).get("LBNL-BSM", {}).get("result", {}).get("pol_tracking_series", [])
+                if last_cals
+                else []
+            )
             if (
                 status_code == Code.OK.value
                 and src_entry.get("status", {}).get("code") == Code.OK.value
@@ -290,11 +300,13 @@ async def run_calibration_tests(collector, host="localhost"):
                 and bsm_res.get("status") == "done"
                 and bsm_res.get("samples_replayed") == EXPECTED_SAMPLE_COUNT
                 and bsm_res.get("stabilized") is True
+                and len(series) == EXPECTED_SAMPLE_COUNT
+                and len(last_series) == EXPECTED_SAMPLE_COUNT
             ):
                 cal_ok = True
-                cal_details = f"id={cal_id[:8]}... stabilized=True (26 samples)"
+                cal_details = f"id={cal_id[:8]}... stabilized=True (26 samples stored & queried via getLast)"
             else:
-                cal_details = f"unexpected result: {rec}"
+                cal_details = f"unexpected result: {rec} / getLast={last_resp}"
 
         # --- Test 2: Verify MQTT experiment_data telemetry stream ---
         exp_msgs = collector.for_expid(cal_id)

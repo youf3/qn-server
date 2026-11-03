@@ -5,6 +5,7 @@ Resource Manager
 import json
 import logging
 import os
+import time
 import types
 import networkx as nx
 from networkx import node_link_data
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 class ResourceManager:
+    AGENT_LIVENESS_TIMEOUT = 20.0
+
     def __init__(self, rtype="nodes", key="agentId", **kwargs):
         self._topo = None
         self._node_db = DB().handler(DBmodel.Node)          # sync — used by find_nodes, get_nodes
@@ -24,6 +27,22 @@ class ResourceManager:
         self._async_node_db = AsyncDB().handler(DBmodel.Node)  # async — used by handle_register
         self._is_topo_updated = False
         self._is_topo_full = False
+
+    def _is_node_stale(self, node_doc, now=None) -> bool:
+        """Return True if *node_doc* has a recorded last_seen that is expired or cleared."""
+        if not isinstance(node_doc, dict) or "last_seen" not in node_doc:
+            return False
+        last_seen = node_doc.get("last_seen")
+        if last_seen is None:
+            return True
+        try:
+            ls_val = float(last_seen)
+        except (TypeError, ValueError):
+            return True
+        if ls_val <= 0:
+            return True
+        now_ts = time.time() if now is None else float(now)
+        return (now_ts - ls_val) > self.AGENT_LIVENESS_TIMEOUT
 
     def set_topo_updated(self):
         """Mark topology as dirty so get_topology() rebuilds on next call."""
@@ -80,6 +99,7 @@ class ResourceManager:
             ntype = payload.systemSettings.type
             logger.info(f"Registering {ntype} {sysid} from agent {node.agentId}")
             jsobj = json.loads(payload.serialize())
+            jsobj["last_seen"] = time.time()
 
             await self._async_node_db.upsert({"systemSettings.ID": str(sysid)}, jsobj)
             logger.info(f"Registering {ntype} {sysid} succeed.")
@@ -87,6 +107,53 @@ class ResourceManager:
         except Exception as e:
             logger.warning(f"Registering {ntype} {sysid} failed: {e}")
             raise
+
+    async def handle_deregister(self, request):
+        """Handle agent deregistration by marking the agent UNKNOWN and its links DOWN."""
+        if request is None:
+            return
+        agent_id = str(getattr(request, "agentId", "") or "").strip()
+        if not agent_id:
+            return
+        logger.info(f"Deregistering agent {agent_id}")
+        try:
+            await self._async_node_db.update({"systemSettings.ID": agent_id}, "last_seen", 0)
+        except Exception as e:
+            logger.warning(f"Failed to clear last_seen for {agent_id}: {e}")
+        try:
+            state_db = AsyncDB().handler(DBmodel.MonitorState)
+            await state_db.add(
+                {
+                    "rid": agent_id,
+                    "ts": time.time(),
+                    "eventType": EventType.AGENT_STATE,
+                    "value": "UNKNOWN",
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record UNKNOWN state for {agent_id}: {e}")
+        try:
+            link_db = AsyncDB().handler(DBmodel.LinkState)
+            all_links = await link_db.find()
+            for ldoc in all_links or []:
+                if (
+                    isinstance(ldoc, dict)
+                    and (ldoc.get("src_cid") == agent_id or ldoc.get("dst_cid") == agent_id)
+                    and ldoc.get("state") != "DOWN"
+                ):
+                    updated = {k: v for k, v in ldoc.items() if k != "_id"}
+                    updated["state"] = "DOWN"
+                    await link_db.upsert(
+                        {
+                            "src_cid": ldoc.get("src_cid"),
+                            "dst_cid": ldoc.get("dst_cid"),
+                            "channel_id": ldoc.get("channel_id"),
+                        },
+                        updated,
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to mark links DOWN for deregistered agent {agent_id}: {e}")
+        self._is_topo_updated = True
 
     def find_nodes(self, params=None, **kwargs):
         if params is None:
@@ -122,6 +189,11 @@ class ResourceManager:
         falls back to a per-neighbor query for backward compatibility.
         """
         try:
+            for ep in (src_cid, dst_cid):
+                if ep:
+                    node_doc = self._node_db.get({"systemSettings.ID": str(ep)})
+                    if node_doc and self._is_node_stale(node_doc):
+                        return "DOWN"
             link_db = DB().handler(DBmodel.LinkState)
             query = {"src_cid": src_cid, "dst_cid": dst_cid}
             if channel_id is not None:
@@ -241,6 +313,17 @@ class ResourceManager:
         self._topo = g
 
     def get_node_state(self, agentid):
+        try:
+            node_doc = self._node_db.get({"systemSettings.ID": str(agentid)})
+            if node_doc and self._is_node_stale(node_doc):
+                return {
+                    "rid": str(agentid),
+                    "ts": time.time(),
+                    "eventType": EventType.AGENT_STATE,
+                    "value": "UNKNOWN",
+                }
+        except Exception:
+            pass
         # Query the capped MonitorState collection — only agentState events,
         # natural order = insertion order, so $natural: -1 gives the latest first.
         handler = DB().handler(DBmodel.MonitorState)

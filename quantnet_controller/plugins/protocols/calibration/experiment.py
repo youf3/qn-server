@@ -59,6 +59,7 @@ class CalibrationDstSequence(AgentSequences):
 
 class CalibrationExperiment(Experiment):
     name = "Calibration"
+    exp_type = "calibration"
     agent_sequences = [CalibrationSrcSequence, CalibrationDstSequence]
 
     def get_sequence(self, agent_index):

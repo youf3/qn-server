@@ -887,5 +887,29 @@ class TestFindCommonSlotWithPrefill:
         assert len(slots["agent2"]) == 2
 
 
+class TestRequestExperimentData:
+    """Test Request.experiment_data property used by spgQuery/bsmQuery/egpQuery."""
+
+    def test_experiment_data_returns_agent_result_list(self):
+        from quantnet_controller.common.request import Request, RequestType
+
+        req = Request("req-123", RequestType.EXPERIMENT, {})
+        assert req.experiment_data is None
+
+        req.result = {
+            "LBNL-Q": {
+                "agentId": "LBNL-Q",
+                "status": {"code": 0, "value": "OK"},
+                "result": {"status": "done", "exp_type": "spg", "photons_detected": 842},
+            },
+            "reason": None,
+        }
+        data = req.experiment_data
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["agentId"] == "LBNL-Q"
+        assert data[0]["result"]["exp_type"] == "spg"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

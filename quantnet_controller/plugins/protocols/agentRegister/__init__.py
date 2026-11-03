@@ -49,10 +49,16 @@ class RegisterProtocol(ProtocolPlugin):
             return agentRegisterResponse(status=responseStatus(code=rc, value=Code(rc).name, reason=str(e)))
         return agentRegisterResponse(status=responseStatus(code=rc, value=Code(rc).name))
 
-    def handle_deregister(self, request):
+    async def handle_deregister(self, request):
         """handle rpc messages"""
         logger.info(f"Received Deregister: {request.serialize()}")
         rc = 0
+        try:
+            await self.ctx.scheduler.schedule(self._rm.handle_deregister, request)
+            if hasattr(self.ctx, "router") and self.ctx.router:
+                self.ctx.router.refresh()
+        except Exception as e:
+            logger.warning(f"Deregister handling failed: {e}")
         return agentDeregisterResponse(status=responseStatus(code=rc, value=Code(rc).name))
 
     def handle_update(self, request):
@@ -68,11 +74,26 @@ class RegisterProtocol(ProtocolPlugin):
             full = request.payload.parameters.as_dict().get("full", False)
             return getInfoResponse(status=responseStatus(code=rc, value=Code(rc).name), value=[self._rm.get_topology(full=full)])
         elif request.payload.type == "node":
-            nodes = self._rm.find_nodes(request.payload.parameters.as_dict())
+            params = request.payload.parameters.as_dict()
+            raw_nodes = self._rm.find_nodes(dict(params), dict=True)
+            last_seen_map = {}
+            if isinstance(raw_nodes, list):
+                for rn in raw_nodes:
+                    if isinstance(rn, dict) and "last_seen" in rn:
+                        rid = str(rn.get("systemSettings", {}).get("ID", ""))
+                        if rid:
+                            last_seen_map[rid] = rn["last_seen"]
+            nodes = self._rm.find_nodes(params)
             for n in nodes:
                 n.state = self._rm.get_node_state(str(n.systemSettings.ID))
-            nodes = [n.as_dict() for n in nodes]
-            return getInfoResponse(status=responseStatus(code=rc, value=Code(rc).name), value=nodes)
+            node_dicts = []
+            for n in nodes:
+                d = n.as_dict()
+                nid = str(n.systemSettings.ID)
+                if nid in last_seen_map:
+                    d["last_seen"] = last_seen_map[nid]
+                node_dicts.append(d)
+            return getInfoResponse(status=responseStatus(code=rc, value=Code(rc).name), value=node_dicts)
         else:
             raise Exception(f"unknown type {request.payload.type} in getInfo.")
 
